@@ -47,9 +47,7 @@ gcp:
 
 That's the whole thing. Commit it.
 
-Notice what isn't in there: any mention of a secret. No names, no environments, no values, no digests. Early versions of this tool kept a list of every secret and which environment it belonged to, and that list was wrong within a week. Someone adds a secret through the GitHub UI and your yaml doesn't know. Someone renames one in the console and now `rotate` skips it silently.
-
-So the list is gone. Every command asks the stores directly (`gh secret list`, `gcloud secrets list`, the environments API) and works from whatever comes back. Slower by a second or two. Never wrong.
+No secret is named in it. Every command asks the stores directly (`gh secret list`, `gcloud secrets list`, the environments API) and works from whatever comes back. Slower by a second or two. Never wrong.
 
 The `prefix` matters on the GCP side. Secret Manager is one flat namespace per project, and most GCP projects hold secrets for more than one thing. Anything starting with `lsr-` is yours. Everything else secretman won't list, won't touch, won't offer to delete.
 
