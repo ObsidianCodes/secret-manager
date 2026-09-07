@@ -2,8 +2,6 @@
 
 A small CLI for rotating the credentials a project keeps in GitHub Actions and Google Secret Manager.
 
-It replaces the `rotate-secrets.sh` that every repo eventually grows: the one with parallel bash arrays, the one nobody wants to touch, the one that writes to GitHub but forgets GCP.
-
 ```
 secretman init      # three questions, writes .secretman.yaml
 secretman rotate    # walks what's actually there, asks for each
