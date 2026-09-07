@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master
 
 The script figures out your OS and architecture, pulls that tarball, checks the sha256 against the published checksums, and drops the binary in place. It's one file and it's short, so give it a read first if that's your habit.
 
-Prefer to build it yourself:
+Build it yourself:
 
 ```
 go install github.com/ObsidianCodes/secret-manager@latest
@@ -44,8 +44,6 @@ gcp:
   project: lifespanrecords
   prefix: lsr-
 ```
-
-That's the whole thing. Commit it.
 
 No secret is named in it. Every command asks the stores directly (`gh secret list`, `gcloud secrets list`, the environments API) and works from whatever comes back.
 
@@ -74,7 +72,11 @@ An unknown key is an error. Misspell one and the command stops instead of ignori
 
 ### rotate
 
-`rotate` asks both stores what they hold, then steps through it one at a time:
+```
+secretman rotate
+```
+
+It asks both stores what they hold, then steps through the answer one entry at a time:
 
 ```
 github:WORKOS_API_KEY:staging
@@ -96,9 +98,19 @@ Afterwards, anything readable gets read back and compared. GitHub secrets can't 
 
 ### hotswap
 
+```
+secretman hotswap
+```
+
 Same walk, but you pick the entries first from a checkbox list. For when one key has leaked and pressing Enter past twenty-nine others isn't reasonable, especially at 3am.
 
 ### init
+
+```
+secretman init
+secretman init --print     # show what it would write, write nothing
+secretman init --force     # replace an existing config without asking
+```
 
 Asks which stores you use, the repo, the GCP project, and the prefix. It suggests answers from `gh repo view` and `gcloud config get-value project`, so mostly you press Enter.
 
@@ -108,9 +120,19 @@ init only looks at the current project. It won't inherit a `.secretman.yaml` fro
 
 ### config add
 
+```
+secretman config add
+```
+
 Creates a secret that doesn't exist yet. Listing can only find what's already in a store, so creating one needs its own command. It asks for the name once, then per store: for GitHub, repo-wide or which environments; for GCP, whether to include it and what to call it. The Secret Manager name is prefilled from your prefix but you can change it, which matters if you're adopting secrets that already follow some other scheme.
 
 ### delete
+
+```
+secretman delete
+secretman delete --dry-run   # show what would go, delete nothing
+secretman delete --force     # skip the confirmation, still shows the list
+```
 
 Lists everything, you tick what you want gone, and then it lists what you ticked and asks again. The default is no. Deleting from Secret Manager takes every version with it and leaves nothing to roll back to, and the confirmation says exactly that.
 
@@ -118,18 +140,37 @@ If you just want to stop rotating something without destroying it, do nothing. `
 
 ### env list, env add
 
+```
+secretman env list
+secretman env add staging
+secretman env add staging production development
+```
+
 Manage GitHub Environments. An environment-scoped secret can't be written until the environment exists, so new ones get created here first. The underlying call is idempotent, so naming one that already exists costs an API call and nothing else.
 
 ### status
 
+```
+secretman status
+```
+
 Prints a presence matrix per store, then compares your environments against each other. If staging has a `CLAIM_TOKEN` and production doesn't, you'll see it. That's either a deploy waiting to fail or a leftover nobody needs, and both are worth knowing. The comparison runs both ways, and nothing has to be declared anywhere for it to work.
 
 ### verify
+
+```
+secretman verify
+```
 
 Reads values back from whatever's readable and reports two things. Entries sharing a digest, which is sometimes correct (a rotation writes one value to two stores) and sometimes means production's key got pasted into staging. And damaged values: trailing newlines, stray whitespace, control characters, all of which mean something other than this tool did the writing. A trailing newline is invisible in every UI that displays a secret, so nothing else is ever going to show it to you.
 
 On a GitHub-only project verify has nothing to read, and says so rather than reporting that everything is fine when it has no way to know.
 
 ### doctor
+
+```
+secretman doctor
+secretman doctor -c ../other-project/.secretman.yaml
+```
 
 Runs the same preflight a rotation runs, counts what each store holds, lists your environments, and stops. Nothing prompted, nothing written. Safe in CI, safe while a colleague is mid-rotation.
