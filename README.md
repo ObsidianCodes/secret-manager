@@ -53,7 +53,26 @@ The `prefix` matters on the GCP side. Secret Manager is one flat namespace per p
 
 An unknown key is an error. Misspell one and the command stops instead of ignoring it.
 
-## Rotating
+## Usage
+
+| command | what it does | flags |
+|---|---|---|
+| `init` | write `.secretman.yaml` | `--print`, `--force` |
+| `rotate` | walk everything and prompt for each | |
+| `hotswap` | pick a few from a list, walk only those | |
+| `config add` | create a secret that doesn't exist yet | |
+| `config show` | print the config file | |
+| `config path` | print which config is in effect | |
+| `delete` | destroy secrets in the stores | `--force` |
+| `env list` | list GitHub Environments | |
+| `env add <name>...` | create GitHub Environments | |
+| `status` | what exists where, and what's missing | |
+| `verify` | read values back, report problems | |
+| `doctor` | check credentials, change nothing | |
+
+`--dry-run` works everywhere and stops before any write. `-c <path>` points at a specific config instead of searching for one. `delete` is also spelled `rm` or `remove`, and `config rm` still reaches it.
+
+### rotate
 
 `rotate` asks both stores what they hold, then steps through it one at a time:
 
@@ -79,26 +98,38 @@ Afterwards, anything readable gets read back and compared. GitHub secrets can't 
 
 Same walk, but you pick the entries first from a checkbox list. For when one key has leaked and pressing Enter past twenty-nine others isn't reasonable, especially at 3am.
 
-## Other commands
+### init
 
-**`init`** asks which stores you use, the repo, the GCP project, and the prefix. It suggests answers from `gh repo view` and `gcloud config get-value project`, so mostly you press Enter.
+Asks which stores you use, the repo, the GCP project, and the prefix. It suggests answers from `gh repo view` and `gcloud config get-value project`, so mostly you press Enter.
 
 If a config already exists it stops and asks first. The warning is specific: changing `repo` or `prefix` doesn't edit anything, it points secretman somewhere else entirely. The secrets it was managing keep existing and keep working, they just stop being visible to this tool. Worth understanding before you say yes.
 
 init only looks at the current project. It won't inherit a `.secretman.yaml` from a parent directory the way the other commands do, because a parent's config belongs to a parent's project. It'll mention that one exists and write a new one anyway.
 
-**`config add`** creates a secret that doesn't exist yet. Listing can only find what's already in a store, so creating one needs its own command. It asks for the name once, then per store: for GitHub, repo-wide or which environments; for GCP, whether to include it and what to call it. The Secret Manager name is prefilled from your prefix but you can change it, which matters if you're adopting secrets that already follow some other scheme.
+### config add
 
-**`delete`** (also `rm`) lists everything, you tick what you want gone, and then it lists what you ticked and asks again. The default is no. Deleting from Secret Manager takes every version with it and leaves nothing to roll back to, and the confirmation says exactly that.
+Creates a secret that doesn't exist yet. Listing can only find what's already in a store, so creating one needs its own command. It asks for the name once, then per store: for GitHub, repo-wide or which environments; for GCP, whether to include it and what to call it. The Secret Manager name is prefilled from your prefix but you can change it, which matters if you're adopting secrets that already follow some other scheme.
+
+### delete
+
+Lists everything, you tick what you want gone, and then it lists what you ticked and asks again. The default is no. Deleting from Secret Manager takes every version with it and leaves nothing to roll back to, and the confirmation says exactly that.
 
 If you just want to stop rotating something without destroying it, do nothing. `rotate` walks what exists and Enter skips.
 
-**`env list` / `env add`** manage GitHub Environments. An environment-scoped secret can't be written until the environment exists, so new ones get created here first. The underlying call is idempotent, so naming one that already exists costs an API call and nothing else.
+### env list, env add
 
-**`status`** prints a presence matrix per store, then compares your environments against each other. If staging has a `CLAIM_TOKEN` and production doesn't, you'll see it. That's either a deploy waiting to fail or a leftover nobody needs, and both are worth knowing. The comparison runs both ways, and nothing has to be declared anywhere for it to work.
+Manage GitHub Environments. An environment-scoped secret can't be written until the environment exists, so new ones get created here first. The underlying call is idempotent, so naming one that already exists costs an API call and nothing else.
 
-**`verify`** reads values back from whatever's readable and reports two things. Entries sharing a digest, which is sometimes correct (a rotation writes one value to two stores) and sometimes means production's key got pasted into staging. And damaged values: trailing newlines, stray whitespace, control characters, all of which mean something other than this tool did the writing. A trailing newline is invisible in every UI that displays a secret, so nothing else is ever going to show it to you.
+### status
+
+Prints a presence matrix per store, then compares your environments against each other. If staging has a `CLAIM_TOKEN` and production doesn't, you'll see it. That's either a deploy waiting to fail or a leftover nobody needs, and both are worth knowing. The comparison runs both ways, and nothing has to be declared anywhere for it to work.
+
+### verify
+
+Reads values back from whatever's readable and reports two things. Entries sharing a digest, which is sometimes correct (a rotation writes one value to two stores) and sometimes means production's key got pasted into staging. And damaged values: trailing newlines, stray whitespace, control characters, all of which mean something other than this tool did the writing. A trailing newline is invisible in every UI that displays a secret, so nothing else is ever going to show it to you.
 
 On a GitHub-only project verify has nothing to read, and says so rather than reporting that everything is fine when it has no way to know.
 
-**`doctor`** runs the same preflight a rotation runs, counts what each store holds, lists your environments, and stops. Nothing prompted, nothing written. Safe in CI, safe while a colleague is mid-rotation.
+### doctor
+
+Runs the same preflight a rotation runs, counts what each store holds, lists your environments, and stops. Nothing prompted, nothing written. Safe in CI, safe while a colleague is mid-rotation.
