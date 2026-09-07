@@ -64,6 +64,9 @@ An unknown key is an error. Misspell one and the command stops instead of ignori
 | `delete` | destroy secrets in the stores | `--force` |
 | `env list` | list GitHub Environments | |
 | `env add <name>...` | create GitHub Environments | |
+| `var list` | list GitHub Actions variables, with values | |
+| `var set [NAME] [VALUE]` | create or change a variable | `--env`, `--repo-wide` |
+| `var rm [NAME...]` | remove variables | `--env`, `--force` |
 | `status` | what exists where, and what's missing | |
 | `verify` | read values back, report problems | |
 | `doctor` | check credentials, change nothing | |
@@ -147,6 +150,25 @@ secretman env add staging production development
 ```
 
 Manage GitHub Environments. An environment-scoped secret can't be written until the environment exists, so new ones get created here first. The underlying call is idempotent, so naming one that already exists costs an API call and nothing else.
+
+### var list, var set, var rm
+
+```
+secretman var list
+secretman var set                                        # asks for everything
+secretman var set GCP_REGION us-east1
+secretman var set GCP_REGION us-east1 --env staging --env production
+secretman var rm
+secretman var rm GCP_REGION --env staging --force
+```
+
+The non-secret half of a workflow's environment: regions, project ids, service account addresses. A variable's value is public — anyone who can read the repository can read it — so these commands print values in full, and never fingerprint them. Anything that would matter if it leaked is a secret, and belongs in `rotate`, not here.
+
+Variables live only in GitHub. Secret Manager has no equivalent: a non-secret there would be a secret with a plaintext value, so nothing under `var` touches GCP. Like secrets they're repo-wide or scoped to an environment, and the environment has to exist first (`secretman env add`).
+
+`set` is add, change, and rotate all at once, because GitHub's own call is an upsert. With no arguments it asks: which variable (existing names first, so you don't create a near-duplicate by retyping one), where it belongs, and the value — prefilled with what's there now, so changing one is an edit. With a name and a value it writes them straight and needs no terminal, which is the form for a script. Every write is read back and compared, which is a check the secret path can never have.
+
+`rm` with no arguments lists everything with its value and deletes what you tick. With names it takes `--env`. It prints values before they go, so putting one back is a paste — what actually breaks is any workflow reading it, at its next run.
 
 ### status
 

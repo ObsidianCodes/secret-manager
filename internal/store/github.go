@@ -137,6 +137,104 @@ func (g *GitHub) Read(ctx context.Context, e Entry) (string, error) {
 	return "", ErrWriteOnly
 }
 
+// Variable is one GitHub Actions variable, as GitHub holds it.
+//
+// Variables are not secrets and are deliberately not Entry: their values are
+// public, readable by anyone who can read the repository, and printed here in
+// full. Nothing about them is fingerprinted or hidden, because pretending a
+// public value is a secret is how a real secret ends up stored as one.
+//
+// They are also a GitHub-only concept. Secret Manager has no equivalent — a
+// non-secret there would just be a secret with a plaintext value — so this
+// lives on the GitHub store rather than in the Store interface.
+type Variable struct {
+	Name  string
+	Value string
+	Env   string // "" when the variable is repository-wide
+}
+
+// Label is what the operator sees: store, name, and environment when there is one.
+func (v Variable) Label() string {
+	if v.Env == "" {
+		return fmt.Sprintf("github:%s", v.Name)
+	}
+	return fmt.Sprintf("github:%s:%s", v.Name, v.Env)
+}
+
+// ID is a stable key for a variable, used to track what a session has touched.
+func (v Variable) ID() string { return v.Env + "\x00" + v.Name }
+
+// Scope names where the variable lives, for tables.
+func (v Variable) Scope() string {
+	if v.Env == "" {
+		return "(repo-wide)"
+	}
+	return v.Env
+}
+
+// Variables lists repository-wide variables, then each environment's.
+func (g *GitHub) Variables(ctx context.Context) ([]Variable, error) {
+	out := g.variables(ctx, "")
+
+	envs, err := g.Environments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, env := range envs {
+		out = append(out, g.variables(ctx, env)...)
+	}
+	return out, nil
+}
+
+// variables lists variables at the repository level, or within one environment.
+func (g *GitHub) variables(ctx context.Context, env string) []Variable {
+	args := []string{"variable", "list", "--repo", g.repo, "--json", "name,value"}
+	if env != "" {
+		args = append(args, "--env", env)
+	}
+	res, err := shell.Run(ctx, "gh", args...)
+	if err != nil {
+		return nil // no variables, or no access to that environment
+	}
+	var rows []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal([]byte(res.Stdout), &rows) != nil {
+		return nil
+	}
+	out := make([]Variable, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Variable{Name: r.Name, Value: r.Value, Env: env})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// SetVariable creates or updates a variable. gh treats set as an upsert, so
+// adding and changing one are the same call.
+func (g *GitHub) SetVariable(ctx context.Context, v Variable) error {
+	// stdin rather than --body, for the same reason the secret path uses it:
+	// argv is visible in `ps`. A variable is public, but keeping one path for
+	// both means there is no second habit to get wrong.
+	args := []string{"variable", "set", v.Name, "--repo", g.repo}
+	if v.Env != "" {
+		args = append(args, "--env", v.Env)
+	}
+	_, err := shell.RunStdin(ctx, v.Value, "gh", args...)
+	return err
+}
+
+// DeleteVariable removes a variable.
+func (g *GitHub) DeleteVariable(ctx context.Context, v Variable) error {
+	args := []string{"variable", "delete", v.Name, "--repo", g.repo}
+	if v.Env != "" {
+		args = append(args, "--env", v.Env)
+	}
+	_, err := shell.Run(ctx, "gh", args...)
+	return err
+}
+
 // EnsureEnvironment creates a GitHub Environment. The PUT is idempotent.
 func (g *GitHub) EnsureEnvironment(ctx context.Context, name string) (created bool, err error) {
 	path := fmt.Sprintf("repos/%s/environments/%s", g.repo, name)

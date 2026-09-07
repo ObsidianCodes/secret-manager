@@ -50,6 +50,7 @@ value. Enter skips.
   secretman hotswap               pick a few from a list, walk only those
   secretman config add            create a secret that does not exist yet
   secretman delete                destroy secrets, permanently, after asking twice
+  secretman var                   the non-secret half: GitHub Actions variables
   secretman status                what exists where, and what is missing
   secretman verify                read back: shared values, damaged values
   secretman doctor                check credentials, change nothing
@@ -83,6 +84,7 @@ credentials, and has none of its own.`,
 		newVerifyCmd(),
 		newDoctorCmd(),
 		newEnvCmd(),
+		newVarCmd(),
 	)
 	return root
 }
