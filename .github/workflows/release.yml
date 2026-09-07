@@ -1,7 +1,15 @@
 name: release
 
+# Every push to master ships. The tag is computed here rather than typed,
+# because a version nobody has to remember to bump is a version that never
+# silently stops moving.
+#
+# Still on a 0.2.x patch series: the config format is not stable yet, so a
+# minor bump would claim a compatibility promise that is not being made. Semver
+# proper starts when it is.
 on:
   push:
+    branches: [master]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -11,6 +19,12 @@ on:
 
 permissions:
   contents: write
+
+# One release at a time. Two pushes in quick succession would otherwise race to
+# compute the same next patch number.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -29,31 +43,69 @@ jobs:
       - name: check
         run: make check
 
+      # A tag push or a manual run already names its version. A push to master
+      # takes the next patch after the highest v0.2.* that exists.
+      - name: resolve tag
+        id: tag
+        run: |
+          set -eu
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            tag="${{ github.event.inputs.tag }}"
+            existing=yes
+          elif [ "${{ github.ref_type }}" = tag ]; then
+            tag="${{ github.ref_name }}"
+            existing=yes
+          else
+            git fetch --tags --force --quiet
+            last=$(git tag -l 'v0.2.*' \
+              | sed 's/^v0\.2\.//' \
+              | grep -E '^[0-9]+$' \
+              | sort -n | tail -1 || true)
+            tag="v0.2.$(( ${last:-0} + 1 ))"
+            existing=no
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "existing=$existing" >> "$GITHUB_OUTPUT"
+          echo "releasing $tag"
+
+      - name: create tag
+        if: steps.tag.outputs.existing == 'no'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
       - name: build
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -eu
           mkdir -p dist
           for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
             os=${target%/*}
             arch=${target#*/}
-            out="dist/secretman"
             GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build \
               -trimpath \
               -ldflags "-s -w -X github.com/ObsidianCodes/secret-manager/cmd.Version=$TAG" \
-              -o "$out" .
+              -o dist/secretman .
             tar -czf "dist/secretman_${TAG}_${os}_${arch}.tar.gz" -C dist secretman
-            rm "$out"
+            rm dist/secretman
           done
           cd dist && sha256sum *.tar.gz > checksums.txt
 
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            && gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber \
-            || gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-                 --title "$TAG" --generate-notes
+          set -eu
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --generate-notes
+          fi
