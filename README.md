@@ -1,210 +1,203 @@
 # secretman
 
-Rotate project credential. Every store. One walk.
+Rotate a project's credentials in the stores that hold them. One walk, no local list.
 
-**Keep no list of your secrets.** Config is three field. What exist get read from the store, every run. Nothing to keep in sync, nothing to go stale.
+The config is coordinates only: which GitHub repository, which GCP project, which name prefix. What exists is read from the stores on every run, so there is nothing to keep in sync and nothing that can go stale.
 
-```
-secretman init      # ask 3 thing, write .secretman.yaml
-secretman rotate    # walk what actually exist, prompt each
-secretman hotswap   # tick a few from list, rotate only those
+```sh
+secretman init      # write .secretman.yaml
+secretman rotate    # walk what actually exists, prompt for each
+secretman hotswap   # tick a few from a list, rotate only those
 ```
 
 ## Install
 
-```
+```sh
 curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master/install.sh | sh
 ```
 
-Land in `$HOME/.local/bin`. Change with `INSTALL_DIR=`, pin with `VERSION=`:
+The binary lands in `$HOME/.local/bin`. Override the directory with `INSTALL_DIR=`, pin a tag with `VERSION=`:
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master/install.sh | INSTALL_DIR=/usr/local/bin VERSION=v0.1.0 sh
 ```
-curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master/install.sh \
-  | INSTALL_DIR=/usr/local/bin VERSION=v0.1.0 sh
+
+The script pulls the release tarball for your OS/arch, checks sha256 against `checksums.txt` when that file is present, and installs `secretman`. It is one file — read it first if you like. Needs `curl` and `tar` on PATH.
+
+Or from source:
+
+```sh
+go install github.com/ObsidianCodes/secret-manager@latest
 ```
 
-Script pull release tarball for your os/arch, check sha256, drop binary. One file — read it first if you like.
+```sh
+make build && ./bin/secretman
+```
 
-Or Go: `go install github.com/ObsidianCodes/secret-manager@latest`
-Or local: `make build` → `./bin/secretman`
+secretman shells out to `gh` and `gcloud` for whichever stores the config enables. Both CLIs already hold your login; this tool never asks for a token of its own, and never stores one. Values go to those CLIs on **stdin, never argv** — argv is visible in `ps`.
 
-Need `gh` and `gcloud` on PATH, both logged in. secretman reuse their credential. Never ask for token of own, never store one.
+## Config
 
-## The config
-
-Whole file. Three field:
+At most three fields. Copy is in [`examples/lsr.secretman.yaml`](examples/lsr.secretman.yaml):
 
 ```yaml
 github:
-  repo: ObsidianCodes/lsr     # omit -> gh resolve from cwd
+  repo: ObsidianCodes/lsr # omit → gh resolves from the working directory
 
 gcp:
-  project: lifespanrecords    # project ID, not display name. Often differ
-  prefix: lsr-                # everything carrying it is this project's
+  project: lifespanrecords # project ID, not display name — they often differ
+  prefix: lsr-             # everything carrying it belongs to this project
 ```
 
-That is it. No secret name, no environment list, no value, no digest. **Commit it.**
+That is the whole file. No secret names, no environment list, no values, no digests. **Commit it.** `secretman init` writes `.secretman.yaml` (or `.secretman.yml`) at the git root when it can find one.
 
-Why so small: a list of secret in a file is a second copy of what the store already know, and the copy is the half that rot. Somebody add a secret through the dashboard, file now lie. secretman ask the store instead — `gh secret list`, `gcloud secrets list`, `gh api .../environments`. Cannot be stale, because nothing is remembered.
+You can configure GitHub only, GCP only, or both. At least one store is required. An unknown YAML key is an error, not ignored.
 
-`prefix` do the real work on GCP side. A GCP project often hold many project secret. Everything with the prefix is your. Everything without is somebody else, and secretman never list it, never walk it, never write it.
+`prefix` is what makes GCP enumeration safe. A GCP project often holds secrets for more than one thing. Names with the prefix are yours; names without it are never listed, walked, or written.
 
-Unknown key = error, not ignore.
+Changing `repo` or `prefix` points secretman at a different set of secrets. Nothing is deleted — the ones it pointed at before keep existing and keep working. They just stop being visible to this tool.
 
 ## Features
 
-**Walk what exist, not what somebody wrote down.** `rotate` ask both store what they hold, then step through it. Every stop print exactly what it about to overwrite:
+**Walk what exists, not what someone wrote down.** `rotate` asks each store what it holds, then steps through that list. Every stop prints the store, the name **as that store spells it**, and the environment when there is one:
 
 ```
 github:WORKOS_API_KEY:staging
-  > Type or paste a value
-    Generate a random value
-    Leave it alone
+  Type or paste a value
+  Generate a random value
+  Leave it alone
 ```
 
-Store, name **as that store spell it**, environment when there is one. GitHub say `WORKOS_API_KEY` in env `staging`. Secret Manager say `lsr-workos-api-key-staging` with no environment, because Secret Manager have no environment. Both shown as they really are. Nothing inferred.
+GitHub says `WORKOS_API_KEY` in env `staging`. Secret Manager says `lsr-workos-api-key-staging` with no environment, because Secret Manager has none. Nothing is inferred to be “the same secret.”
 
-**One paste, many place.** After you enter a value, secretman ask if the same value belong anywhere else, and give you a checkbox list of what you have not reached yet. Tick GitHub staging + GCP, done — one paste, two store, guaranteed identical. Typing same value twice is how two store end up disagreeing about which credential is live.
+**One paste, many places.** After you enter a value, secretman asks whether it belongs anywhere else, and offers a checkbox of entries you have not reached yet. Tick GitHub staging and GCP, done — one paste, two stores, identical by construction. Typing the same value twice is how two stores disagree about which credential is live. The prompt defaults to no, so you can hold Enter through a walk.
 
-**Hotswap for the 3am case.** `secretman hotswap` show the full list, you tick the one that leaked, walk only those. No pressing Enter past thirty other.
+**Hotswap for the 3am case.** `secretman hotswap` shows the full list; you tick the ones that leaked and walk only those.
 
-**Kill the trailing newline.** Paste carry `\n`. `echo` add one. `gh secret set X < file` inherit one. Every UI hide it. Consumer read it as part of credential. secretman strip it — and report the strip, because value written is then not value typed. Also strip pasted `NAME=` and wrapping quote from `.env` paste.
+**Kill the trailing newline.** Pastes carry `\n`. `echo` adds one. `gh secret set X < file` inherits one. Every UI hides it; consumers read it as part of the credential. secretman strips surrounding whitespace — and reports the strip, because the value written is then not quite the value typed. It also strips a leading `NAME=` and wrapping quotes from a `.env` paste.
 
-**Refuse mangled paste.** Interior newline or control char mean terminal-wrapped paste. Repair by guessing = silently truncated credential that fail at next cold start. Refuse instead.
+**Refuse a mangled paste.** An interior newline, tab, or other non-printable ASCII usually means the terminal wrapped a long key. Guessing a repair would write a silently truncated credential that fails at the next cold start. It refuses instead.
 
-**Say where a value already live.** Before first keystroke, secretman digest everything readable. Paste a value that already sit somewhere else, it name the place. **Warn, not refuse** — reusing one credential across place is sometimes exactly what you doing, deliberately, from the prompt above. You decide.
+**Say where a value already lives.** Before the first prompt, readable stores are digested. Paste a value that already sits somewhere else and it names the place. **Warn, not refuse** — reusing one credential across places is sometimes exactly what you are doing, from the prompt above. GitHub is write-only, so this check can only see Secret Manager.
 
-**Generate value nobody issue.** Session sealing key, cookie password. Pick "generate" at any prompt: 32 byte from `crypto/rand`, base64. Never typed, never seen.
+**Generate a value nobody issued.** Session sealing keys, cookie passwords. Pick “generate” at any prompt: 32 bytes from `crypto/rand`, base64. Never typed, never shown.
 
-**Verify what land.** Readable store get read back after write, digest compared. Mismatch is loud. Write-only store get digest of what was sent printed — only record that will ever exist.
+**Verify what landed.** After a write, readable stores are read back and the digest compared. A mismatch is loud. Write-only stores print the digest of what was sent — the only record that write will ever leave.
 
-**Find what one environment lack.** `status` compare environment against each other: "staging has CLAIM_TOKEN, production does not". Derived from store state, catch drift both direction, cost nothing. No declared list mean nothing to keep in step — and nothing that can be wrong about what ought to exist.
+**Find what one environment lacks.** `status` compares environments against each other (`github: CLAIM_TOKEN is missing from production`). Derived from store state, both directions, no declared list of what “ought” to exist.
 
-**Never print a secret.** Value go to `gh`/`gcloud` on **stdin, never argv** — argv visible in `ps` to every user on machine. Hidden prompt. Output only ever show length and `sha256:` first 12 hex.
+**Never print a secret.** Hidden prompt. Output shows length and `sha256:` plus the first 12 hex of SHA-256. Errors never quote the value.
 
-**No format rule, anywhere.** No `prefix: sk_`, no `minLength`, no expected shape. See below.
+**No format rules.** No required prefix, no minimum length, no expected shape. See below.
 
-**Few flag.** `-c`, `--dry-run`, and two `--force`. That is all of them.
+**Few flags.** Persistent `-c` / `--config` and `--dry-run`. `init` has `--print` and `--force`. `config rm` has `--force`.
 
 ## Usage
 
 ### `secretman init`
 
-Ask three thing, write `.secretman.yaml`. Suggest default from `gh repo view` and `gcloud config get-value project`.
+Asks which stores to use, then the fields for those stores, and writes `.secretman.yaml`. Suggests defaults from `gh repo view` and `gcloud config get-value project`. A blank GitHub repo lets `gh` resolve it from the working directory.
 
-Config already exist → **stop and ask**. Warning is specific: changing `repo` or `prefix` point secretman at a *different set of secret*. Nothing get deleted — the one it point at now keep existing, keep working, and stop being visible to this tool entirely.
+If a config already exists, init stops and asks before replacing it. `--force` skips the question. `--print` writes the YAML to stdout instead of disk.
 
-init create nothing in any store. Environment come from `env add`, secret from `config add`.
-
-| flag | do |
-|---|---|
-| `--print` | print config to stdout, write nothing |
-| `--force` `-f` | replace existing config, no question |
+init creates nothing in any store. Environments come from `env add`, secrets from `config add`.
 
 ### `secretman rotate`
 
 The walk.
 
-1. Preflight both store — wrong project id, expired login, API not enabled. Fail here, not halfway.
-2. Ask store what they hold. This is the list. There is no other list.
-3. Digest everything readable, so "already in use" can be named.
-4. Per entry: print `store:name:env` → type / generate / skip → hidden prompt → sanitize → **offer to reuse this value elsewhere** → checkbox of untouched entry.
-5. Table of every write: STORE, ENVIRONMENT, NAME, DIGEST, SOURCE. Equal digest mean same value going to both place, visible before you commit.
-6. Confirm. Write. Read back where store allow.
-7. Say what to do next — redeploy, retire old GCP version, revoke at source.
+1. Preflight both stores — wrong project id, expired login, Secret Manager API not enabled. Fail here, not halfway through a write.
+2. Ask the stores what they hold. That is the list. There is no other list.
+3. Digest everything readable, so “already in use” can be named.
+4. Per entry: print `store:name:env` → type / generate / skip → hidden prompt → sanitize → offer to reuse the value on untouched entries.
+5. Table of every pending write: STORE, ENVIRONMENT, NAME, DIGEST, SOURCE. Equal digests mean the same value is going to both places, visible before you confirm.
+6. Confirm. Write. Read back where the store allows.
+7. Print what to do next — redeploy, leave old GCP versions enabled for rollback, revoke at the source if this was a leak.
 
-Enter skip. Nothing written until step 6, so ctrl-c before that cost nothing.
+Enter skips. Nothing is written until step 6, so aborting before that costs nothing. `--dry-run` runs the same walk and checks, then writes nothing.
 
-Empty store → "no secrets exist in any configured store, `secretman config add` creates one". That is correct, not a bug.
+If no secrets exist yet, it tells you to create one with `secretman config add`. That is correct, not a bug.
 
 ### `secretman hotswap`
 
-Same walk, over a subset you tick first. For when one credential leaked and you not walking thirty.
+The same walk, over a subset you tick first.
 
 ### `secretman config add`
 
-Create secret that do not exist yet. Enumeration cannot invent, so creation is own command.
+Create a secret that does not exist yet. Enumeration cannot invent one, so creation is its own command.
 
-Ask name once, then per store where it belong — GitHub: repo-wide and/or which environment (checkbox); GCP: yes/no + the Secret Manager name, prefilled `<prefix><kebab-name>` but editable, so existing naming scheme get adopted not fought. Then value. Then same confirm table as rotate.
+Asks the name once (as an environment variable, e.g. `WORKOS_API_KEY`), then per store: GitHub gets a checkbox of repository-wide and/or which environments; GCP gets yes/no plus the Secret Manager name, prefilled `<prefix><kebab-name>` but editable so an existing naming scheme is adopted rather than fought. Then a value. Then the same confirm table as rotate.
 
 ### `secretman config rm`
 
-Delete secret **from the store**. Permanent. GCP take every version with it, no rollback after. Tick from list, read the warning, confirm.
+Delete the secret **from the store**. Permanent. On GCP that takes every version with it; there is no rollback afterwards. Tick from a list, read the warning, confirm. `--force` skips the confirm. Aliases: `remove`, `delete`.
 
-Want to stop rotating something without destroying it? Nothing to do — rotate walk what exist, Enter skip.
+Want to stop rotating something without destroying it? Nothing to do — rotate walks what exists, Enter skips.
 
 ### `secretman config show` / `path`
 
-Print the file / print which file in effect.
+Print the file / print which file is in effect. Discovery walks up from the working directory for `.secretman.yaml` or `.secretman.yml`.
 
 ### `secretman env list` / `env add <name>...`
 
-GitHub Environment. Env-scoped secret cannot be written until its environment exist. PUT is idempotent, so naming existing one is not error.
+GitHub Environments. An env-scoped secret cannot be written until its environment exists. The underlying PUT is idempotent, so naming one that already exists is not an error.
 
 ### `secretman status`
 
-What exist where. Matrix per store, secret × environment, `●` / `·`. Then **environment difference** — what one env hold and another lack, both direction.
+What exists where. A matrix per store (secret × environment, `●` / `·`), then environment differences — names one env holds and another lacks, both directions.
 
-Presence only. No value read.
+Presence only. No values are read.
 
 ### `secretman verify`
 
 Read every secret from every **readable** store:
 
-- **Shared value.** Two entry, one digest. Sometimes correct — that is what a rotation write. Sometimes production key pasted into staging. Name both place, leave judgement to you.
-- **Damaged value.** Trailing newline, leading whitespace, interior control char. Written by something that is not this tool — web textarea, `gh secret set X < file`, `echo` in script.
+- **Shared values.** Two entries, one digest. Sometimes correct — that is what a rotation writes. Sometimes a production key was pasted into staging. It names both places and leaves the judgement to you.
+- **Damaged values.** Trailing newline, leading/trailing whitespace, interior newline or tab. Written by something other than this tool — a web textarea, `gh secret set X < file`, `echo` in a script.
 
-GitHub is write-only, so project on GitHub alone get empty report, not clean bill of health. It say so.
+GitHub is write-only, so a project on GitHub alone gets an empty report, not a clean bill of health. It says so.
 
 ### `secretman doctor`
 
-Preflight, then count what each store hold and list GitHub environment. Write nothing, prompt nothing. Safe in CI, safe while somebody else mid-rotation.
+The same preflight a rotation runs, then counts what each store holds and lists GitHub environments. Writes nothing, prompts for nothing. Safe in CI, and safe while someone else is mid-rotation.
 
-### Global flag
+## No format rules, on purpose
 
-| flag | do |
-|---|---|
-| `-c path` | config path. Default: walk up from cwd for `.secretman.yaml` |
-| `--dry-run` | everything except the write |
-| `-h` | help, with example, on every command |
+secretman never checks what a valid value looks like. No required prefix, no minimum length, no expected shape, no “this key belongs to production.”
 
-## No format rule, on purpose
+Rules like that encode a vendor’s **current** key format into a file nobody maintains. Vendors ship new formats — `ghp_` did not exist before 2021, `sk-proj-` before 2024 — and then the rule refuses a **correct** credential, mid-rotation, when the cost is highest. And the rule only helps if you already knew the format.
 
-secretman never check what a valid value look like. No required prefix, no minimum length, no expected shape, no "this key belong to production".
+Showing `github:WORKOS_API_KEY:staging` before you type beats guessing what is valid.
 
-Rule like that encode a vendor's **current** key format into a file nobody maintain. Vendor ship new format — `ghp_` did not exist before 2021, `sk-proj-` before 2024 — and now your rule refuse a **correct** credential, mid-rotation, when cost is highest and the operator is already stressed. And the rule only help if you already knew the format. If you knew, you were not going to paste the wrong thing.
+What survives needs no config and cannot go stale:
 
-Showing you `github:WORKOS_API_KEY:staging` before you type beat guessing what is valid.
+| check | needs |
+| --- | --- |
+| strip `NAME=`, quotes, whitespace — and report it | nothing |
+| refuse control characters / wrapped paste | nothing |
+| name where this value already lives | readable store state |
+| read back after write, compare digest | readable store state |
+| what one environment lacks | store state |
 
-What survive need no config and cannot go stale:
-
-| check | need |
-|---|---|
-| strip `NAME=`, quote, whitespace — and report it | nothing |
-| refuse control char / wrapped paste | nothing |
-| name where this value already live | store state |
-| read back after write, compare digest | store state |
-| what one environment lack | store state |
-
-## Store
+## Stores
 
 | store | write | read | enumerate | note |
-|---|---|---|---|---|
-| GitHub Actions | repo + env secret via `gh` | **no** | yes, name only | write-only. Digest of what was sent is only record that will ever exist |
-| Google Secret Manager | new version via `gcloud` | yes | yes, filtered by prefix | read-back verify every write. Old version stay enabled → rollback possible |
+| --- | --- | --- | --- | --- |
+| GitHub Actions | repo + env secrets via `gh` | **no** | yes, names only | write-only. Digest of what was sent is the only record |
+| Google Secret Manager | new version via `gcloud` | yes | yes, filtered by prefix | read-back verifies every write. Old versions stay enabled, so rollback is possible |
 
-GCP: if repo have Actions variable `RUN_SERVICE_ACCOUNT`, secretman grant it `secretmanager.secretAccessor` on new secret. Taken from the variable, not the config, so it cannot drift from what deploy workflow actually use.
+If both stores are configured and the repo has an Actions variable `RUN_SERVICE_ACCOUNT`, secretman grants that account `roles/secretmanager.secretAccessor` when writing a GCP secret. The account is taken from the variable, not the config, so it cannot drift from what the deploy workflow actually uses. A failed grant is reported; the version may already have been added.
 
-Rotating do **not** revoke old credential. Writing new one do not disable old. Go to the provider.
+Rotating does **not** revoke the old credential. Writing a new one does not disable the old. Go to the provider.
 
 ## Dev
 
 ```
 make test       # go test ./...
-make check      # vet + gofmt + test
-make build      # -> ./bin/secretman
+make check      # go vet + gofmt -l + test
+make build      # → ./bin/secretman
 ```
 
-Test cover what must not regress: newline stripping, control-char refusal, format-agnostic accept (check that refuse a valid provider key is the failure mode most worth avoiding), environment diff both direction, entry identity across store and env, config round trip, atomic save. Test also assert error message never quote the secret.
+Tests cover what must not regress: newline stripping, control-character refusal, format-agnostic accept (refusing a valid provider key is the failure mode most worth avoiding), environment diffs in both directions, entry identity across store and env, config round-trip, atomic save. Errors are asserted never to quote the secret.
 
-Release: tag `v*`, CI cross-build darwin/linux × amd64/arm64, upload tarball + `checksums.txt`.
+Release: tag `v*`. CI cross-builds darwin/linux × amd64/arm64, uploads tarballs and `checksums.txt`.
