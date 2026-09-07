@@ -49,6 +49,7 @@ value. Enter skips.
   secretman rotate                walk everything, prompt for each
   secretman hotswap               pick a few from a list, walk only those
   secretman config add            create a secret that does not exist yet
+  secretman delete                destroy secrets, permanently, after asking twice
   secretman status                what exists where, and what is missing
   secretman verify                read back: shared values, damaged values
   secretman doctor                check credentials, change nothing
@@ -77,6 +78,7 @@ credentials, and has none of its own.`,
 		newConfigCmd(),
 		newRotateCmd(),
 		newHotswapCmd(),
+		newDeleteCmd("delete"),
 		newStatusCmd(),
 		newVerifyCmd(),
 		newDoctorCmd(),

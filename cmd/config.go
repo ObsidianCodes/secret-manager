@@ -26,11 +26,13 @@ rotate only ever walks what already exists, so this is where a secret that does
 not exist yet gets created. There is no local list to keep in step: add writes
 straight to the stores, and the next rotate sees it because it asks them.`,
 		Example: `  secretman config add       # create a secret in one or more stores
-  secretman config rm        # delete one, permanently, after confirming
   secretman config show      # the three fields this tool is pointed at
   secretman config path`,
 	}
-	c.AddCommand(newConfigAddCmd(), newConfigRemoveCmd(),
+	// delete lives at the top level, because it destroys things in a store and
+	// nothing about that is configuration. It is aliased here because that is
+	// where it used to be.
+	c.AddCommand(newConfigAddCmd(), newDeleteCmd("rm"),
 		newConfigShowCmd(), newConfigPathCmd())
 	return c
 }
@@ -232,102 +234,6 @@ func askValue(name string) (value string, generated bool, err error) {
 	}
 	ui.OK("%d characters, %s", len(clean), ui.Fingerprint(secretval.Fingerprint(clean)))
 	return clean, false, nil
-}
-
-// --------------------------------------------------------------- rm
-
-func newConfigRemoveCmd() *cobra.Command {
-	var force bool
-	c := &cobra.Command{
-		Use:     "rm",
-		Aliases: []string{"remove", "delete"},
-		Short:   "Delete a secret from a store, permanently",
-		Long: `Deletes the secret itself, not a reference to it.
-
-There is no local list to remove something from, so this reaches into the store
-and destroys it. In Secret Manager that takes every version with it, and no
-rollback exists afterwards. Anything still reading that secret starts failing at
-its next cold start.
-
-If the aim is to stop rotating something rather than to destroy it, there is
-nothing to do: rotate walks what exists, and Enter skips.`,
-		Example: `  secretman config rm
-  secretman config rm --force`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigRemove(cmd.Context(), force)
-		},
-	}
-	c.Flags().BoolVarP(&force, "force", "f", false, "do not ask")
-	return c
-}
-
-func runConfigRemove(ctx context.Context, force bool) error {
-	if err := requireTTY("config rm"); err != nil {
-		return err
-	}
-	s, entries, err := gatherQuiet(ctx, "config rm")
-	if err != nil {
-		return err
-	}
-
-	chosen, err := pickEntries(entries, "Delete which secrets?",
-		"this destroys them in the store — it does not merely unmanage them")
-	if err != nil {
-		return err
-	}
-	if len(chosen) == 0 {
-		ui.Blank()
-		ui.Note("Nothing selected.")
-		return nil
-	}
-
-	ui.Blank()
-	for _, e := range chosen {
-		ui.Warn("delete %s", e.Label())
-	}
-	ui.Warn("")
-	ui.Warn("  This is permanent. Every version goes with it, and anything still")
-	ui.Warn("  reading it fails at its next cold start.")
-	ui.Blank()
-
-	if flagDryRun {
-		ui.OK("dry run complete; nothing deleted")
-		return nil
-	}
-
-	if !force {
-		ok := false
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewConfirm().
-				Title(fmt.Sprintf("Delete %d secret(s)?", len(chosen))).
-				Affirmative("Delete them").
-				Negative("Keep them").
-				Value(&ok),
-		)).WithTheme(theme()).Run(); err != nil {
-			return err
-		}
-		if !ok {
-			ui.Note("Nothing deleted.")
-			return nil
-		}
-	}
-
-	ui.Step("Deleting")
-	failed := 0
-	for _, e := range chosen {
-		if err := s.delete(ctx, e); err != nil {
-			ui.Warn("%s: FAILED — %v", e.Label(), err)
-			failed++
-			continue
-		}
-		ui.OK("%s — deleted", e.Label())
-	}
-	ui.Blank()
-	if failed > 0 {
-		return fmt.Errorf("%d delete(s) failed", failed)
-	}
-	return nil
 }
 
 // --------------------------------------------------------------- show, path
