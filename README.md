@@ -17,8 +17,25 @@ Value typed at hidden prompt. Pass to `gh`/`gcloud` on **stdin, never argv** —
 
 ## Install
 
+One line. Repo private, so script need token — take it from `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`.
+
 ```
-go install github.com/ObsidianCodes/secret-manager@latest
+curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
+  https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master/install.sh | sh
+```
+
+Land in `$HOME/.local/bin`. Change with `INSTALL_DIR=`, pin with `VERSION=v0.1.0`:
+
+```
+curl ... | INSTALL_DIR=/usr/local/bin VERSION=v0.1.0 sh
+```
+
+Script pull release tarball for your os/arch, check sha256, drop binary. Nothing else.
+
+Or Go:
+
+```
+GOPRIVATE=github.com/ObsidianCodes/* go install github.com/ObsidianCodes/secret-manager@latest
 ```
 
 Or local:
