@@ -3,20 +3,19 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master/install.sh | sh
 #
-# Repo is private, so raw.githubusercontent and the release assets both need a
-# token. Script take it from GITHUB_TOKEN, GH_TOKEN, or `gh auth token`.
+# Pull the release tarball for this os/arch, verify its sha256, drop the
+# binary in place. No token, no API call, no dependency past curl and tar.
 #
 # Env knobs:
 #   VERSION       tag to install, default latest release
 #   INSTALL_DIR   where binary land, default $HOME/.local/bin
-#   GITHUB_TOKEN  token for private repo access
 set -eu
 
 REPO="ObsidianCodes/secret-manager"
 BIN="secretman"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-API="https://api.github.com"
+DL="https://github.com/$REPO/releases/download"
 
 say() { printf '%s\n' "$*" >&2; }
 die() { printf 'install: %s\n' "$*" >&2; exit 1; }
@@ -25,6 +24,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "need $1 on PATH"; }
 need curl
 need tar
 need uname
+need awk
 
 # ---------------------------------------------------------------- platform
 
@@ -41,70 +41,35 @@ case "$arch" in
 	*) die "unsupported arch: $arch" ;;
 esac
 
-# ---------------------------------------------------------------- token
+# ---------------------------------------------------------------- tag
+#
+# /releases/latest redirect to /releases/tag/<tag>. Cheaper than the API and
+# not rate limited the same way.
 
-token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
-	token=$(gh auth token 2>/dev/null || true)
+tag="$VERSION"
+if [ "$tag" = latest ]; then
+	url=$(curl -fsSLo /dev/null -w '%{url_effective}' \
+		"https://github.com/$REPO/releases/latest") ||
+		die "cannot reach github releases"
+	tag=${url##*/}
 fi
-[ -n "$token" ] || die "private repo: set GITHUB_TOKEN, or run 'gh auth login'"
-
-api() {
-	curl -fsSL \
-		-H "Authorization: Bearer $token" \
-		-H "Accept: application/vnd.github+json" \
-		-H "X-GitHub-Api-Version: 2022-11-28" \
-		"$@"
-}
-
-# ---------------------------------------------------------------- release
-
-if [ "$VERSION" = latest ]; then
-	rel_url="$API/repos/$REPO/releases/latest"
-else
-	rel_url="$API/repos/$REPO/releases/tags/$VERSION"
-fi
-
-rel=$(api "$rel_url") || die "no release at $rel_url (bad token, or none published yet)"
-
-tag=$(printf '%s' "$rel" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"$//')
-[ -n "$tag" ] || die "could not read tag_name from release"
+case "$tag" in
+	v*) ;;
+	*) die "no release tag found (got '$tag')" ;;
+esac
 
 asset="${BIN}_${tag}_${os}_${arch}.tar.gz"
-
-# Asset objects come back with "id" before "name"; splitting on { keeps the
-# pair in one chunk, ahead of the nested uploader object.
-asset_id=$(
-	printf '%s' "$rel" | tr '{' '\n' |
-		grep "\"name\": *\"$asset\"" |
-		grep -o '"id": *[0-9]*' | head -1 |
-		grep -o '[0-9]*'
-) || true
-[ -n "${asset_id:-}" ] || die "release $tag has no asset $asset"
-
-sums_id=$(
-	printf '%s' "$rel" | tr '{' '\n' |
-		grep '"name": *"checksums.txt"' |
-		grep -o '"id": *[0-9]*' | head -1 |
-		grep -o '[0-9]*'
-) || true
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 say "==> $BIN $tag ($os/$arch)"
-api -H "Accept: application/octet-stream" \
-	-o "$tmp/$asset" "$API/repos/$REPO/releases/assets/$asset_id" ||
-	die "download failed"
+curl -fsSL -o "$tmp/$asset" "$DL/$tag/$asset" ||
+	die "no asset $asset in release $tag"
 
 # ---------------------------------------------------------------- checksum
 
-if [ -n "${sums_id:-}" ]; then
-	api -H "Accept: application/octet-stream" \
-		-o "$tmp/checksums.txt" "$API/repos/$REPO/releases/assets/$sums_id" ||
-		die "checksums download failed"
-
-	want=$(grep " \*\{0,1\}$asset\$" "$tmp/checksums.txt" | awk '{print $1}' | head -1)
+if curl -fsSL -o "$tmp/checksums.txt" "$DL/$tag/checksums.txt"; then
 	if command -v sha256sum >/dev/null 2>&1; then
 		got=$(sha256sum "$tmp/$asset" | awk '{print $1}')
 	elif command -v shasum >/dev/null 2>&1; then
@@ -113,7 +78,12 @@ if [ -n "${sums_id:-}" ]; then
 		got=""
 		say "warn: no sha256 tool, skipping checksum"
 	fi
+
 	if [ -n "$got" ]; then
+		# Second field carry a leading * in binary mode; strip it before match.
+		want=$(awk -v n="$asset" '
+			{ sub(/^\*/, "", $2); if ($2 == n) { print $1; exit } }
+		' "$tmp/checksums.txt")
 		[ -n "$want" ] || die "checksums.txt name no $asset"
 		[ "$want" = "$got" ] || die "checksum mismatch: want $want got $got"
 		say "==> checksum ok"
@@ -127,7 +97,9 @@ fi
 tar -xzf "$tmp/$asset" -C "$tmp"
 [ -f "$tmp/$BIN" ] || die "archive hold no $BIN"
 
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+[ -d "$INSTALL_DIR" ] || die "cannot create $INSTALL_DIR"
+
 if [ -w "$INSTALL_DIR" ]; then
 	install -m 0755 "$tmp/$BIN" "$INSTALL_DIR/$BIN"
 else
