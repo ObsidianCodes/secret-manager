@@ -102,33 +102,3 @@ If you just want to stop rotating something without destroying it, do nothing. `
 On a GitHub-only project verify has nothing to read, and says so rather than reporting that everything is fine when it has no way to know.
 
 **`doctor`** runs the same preflight a rotation runs, counts what each store holds, lists your environments, and stops. Nothing prompted, nothing written. Safe in CI, safe while a colleague is mid-rotation.
-
-## The two stores
-
-| | GitHub Actions | Google Secret Manager |
-|---|---|---|
-| write | repo and environment secrets via `gh` | new version via `gcloud` |
-| read | no, ever | yes |
-| list names | yes | yes, filtered by prefix |
-| verify a write | impossible, digest only | read-back comparison |
-| rollback | none | previous versions stay enabled |
-
-Values reach both tools on stdin, never as arguments. Anything on a command line is visible in `ps` to every other user on the machine, and this is one of the few places that actually matters.
-
-If your repo has an Actions variable called `RUN_SERVICE_ACCOUNT`, secretman grants it `secretmanager.secretAccessor` on any secret it creates in GCP. It reads that from the variable rather than the config specifically so it can't drift from whatever your deploy workflow is really using.
-
-One thing rotation doesn't do: revoke anything. Writing a new credential doesn't disable the old one. If this was a leak rather than a scheduled rotation, go turn the old one off at the provider.
-
-## Development
-
-```
-make test     # go test ./...
-make check    # vet, gofmt, test
-make build    # ./bin/secretman
-```
-
-The tests cover the things that would be embarrassing to break: newline stripping, control-character refusal, accepting credentials in any format at all (a check that rejects a perfectly good provider key is the failure I most want to avoid), environment diffing in both directions, entry identity across stores and environments, config round-tripping, and the atomic save. There's also one asserting no error message ever quotes the secret it's complaining about.
-
-Every push to master ships. CI works out the next patch tag, runs `make check`, cross-compiles for darwin and linux on amd64 and arm64, and publishes tarballs with checksums. Currently on the `0.2.x` series and staying there until the config format settles; bumping the minor would imply a compatibility promise I'm not making yet.
-
-To cut a specific version, push the tag yourself or run the workflow with a tag input.
