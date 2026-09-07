@@ -15,13 +15,13 @@ import (
 )
 
 // DefaultFilenames are looked for, in order, when --config is not given.
-var DefaultFilenames = []string{"secrets.yaml", "secrets.yml", ".secrets.yaml"}
+var DefaultFilenames = []string{".secretman.yaml", ".secretman.yml"}
 
 // Config is a whole project's secret specification.
 type Config struct {
 	Project      string        `yaml:"project"`
-	GitHub       *GitHub       `yaml:"github"`
-	GCP          *GCP          `yaml:"gcp"`
+	GitHub       *GitHub       `yaml:"github,omitempty"`
+	GCP          *GCP          `yaml:"gcp,omitempty"`
 	Environments []Environment `yaml:"environments"`
 	Secrets      []Secret      `yaml:"secrets"`
 
@@ -32,7 +32,7 @@ type Config struct {
 // GitHub configures the GitHub Actions store.
 type GitHub struct {
 	// Repo is owner/name. Empty means "ask gh which repo we are in".
-	Repo string `yaml:"repo"`
+	Repo string `yaml:"repo,omitempty"`
 }
 
 // GCP configures the Google Secret Manager store.
@@ -41,83 +41,59 @@ type GCP struct {
 	Project string `yaml:"project"`
 	// Prefix is prepended to every secret name, so several projects can share
 	// one GCP project without colliding.
-	Prefix string `yaml:"prefix"`
+	Prefix string `yaml:"prefix,omitempty"`
 }
 
 // Environment is one deployment target.
 type Environment struct {
 	Name string `yaml:"name"`
 	// GitHubEnv is the GitHub Environment name. Defaults to Name.
-	GitHubEnv string `yaml:"githubEnv"`
+	GitHubEnv string `yaml:"githubEnv,omitempty"`
 	// GCPSuffix distinguishes this environment's Secret Manager names.
 	// Secret Manager has no concept of environments, so it goes in the name.
 	// The empty string is legitimate, and conventionally means production.
 	GCPSuffix *string `yaml:"gcpSuffix"`
 }
 
-// Kind selects the validation rules for a secret.
-type Kind string
-
-const (
-	// KindOpaque accepts any single-line value.
-	KindOpaque Kind = "opaque"
-	// KindPrefixed requires a known prefix; used for provider-issued keys.
-	KindPrefixed Kind = "prefixed"
-	// KindPassword enforces a minimum length and can be generated.
-	KindPassword Kind = "password"
-	// KindURL requires an absolute URL, https outside the allowed environments.
-	KindURL Kind = "url"
-)
-
 // Secret is one credential, in every environment.
+//
+// There is deliberately nothing here describing what a valid value looks like.
+// Rules of that shape — a required prefix, a minimum length, a marker saying
+// which environment a value came from — encode a provider's current format into
+// a file nobody maintains, and their failure mode is refusing a correct
+// credential at the moment somebody is trying to rotate it. What replaces them
+// is showing the operator precisely which store, environment and name they are
+// about to overwrite, before they type anything.
 type Secret struct {
 	// Key is the stable identifier used by --only and in output.
 	Key string `yaml:"key"`
 	// Name is the environment variable / GitHub secret name.
 	Name string `yaml:"name"`
 	// Label is what the prompt says.
-	Label string `yaml:"label"`
-	// Help is the dimmed line under the prompt.
-	Help string `yaml:"help"`
-
-	Kind Kind `yaml:"kind"`
-
-	// Prefix is required for KindPrefixed.
-	Prefix string `yaml:"prefix"`
-	// Conflicts maps a prefix that is NOT this secret to what it actually is,
-	// so a transposed paste is named rather than merely rejected. Two adjacent
-	// fields in a dashboard get swapped constantly, and the swap otherwise
-	// fails at the first login rather than at the prompt.
-	Conflicts map[string]string `yaml:"conflicts"`
-
-	// MinLength is the shortest acceptable value. 0 means the kind's default.
-	MinLength int `yaml:"minLength"`
-
-	// Generate offers "generate a random value" at the prompt.
-	Generate bool `yaml:"generate"`
-	// GenerateBytes is how many random bytes to draw. 0 means 32.
-	GenerateBytes int `yaml:"generateBytes"`
-
-	// AllowInsecureIn lists environments where http:// and localhost are
-	// acceptable for a KindURL secret.
-	AllowInsecureIn []string `yaml:"allowInsecureIn"`
-
-	// EnvMarkers map a value prefix to the ONE environment it belongs to.
-	// This is what catches a live key pasted into staging without any network
-	// call, and it works on a first-time setup where nothing is stored yet.
-	EnvMarkers map[string]string `yaml:"envMarkers"`
-
-	// GCPName overrides the derived Secret Manager base name.
-	GCPName string `yaml:"gcpName"`
+	Label string `yaml:"label,omitempty"`
+	// Help is the dimmed line under the prompt: where to find this value.
+	Help string `yaml:"help,omitempty"`
 	// Stores restricts this secret to some stores by ID ("github", "gcp").
 	// Empty means every configured store.
-	Stores []string `yaml:"stores"`
+	Stores []string `yaml:"stores,omitempty"`
 }
 
-// Load reads a config from path, or discovers one by walking up from dir.
+// Load reads a config from path, or discovers one by walking up from dir, and
+// fills in every derived default. This is what the rotating commands use.
 func Load(path, dir string) (*Config, error) {
+	return load(path, dir, true)
+}
+
+// LoadRaw is Load without the derived defaults, for commands that edit the file
+// and write it back: a default written to disk is a decision the operator never
+// made, and it stops tracking the config it was derived from.
+func LoadRaw(path, dir string) (*Config, error) {
+	return load(path, dir, false)
+}
+
+func load(path, dir string, defaults bool) (*Config, error) {
 	if path == "" {
-		found, err := discover(dir)
+		found, err := Discover(dir)
 		if err != nil {
 			return nil, err
 		}
@@ -137,14 +113,32 @@ func Load(path, dir string) (*Config, error) {
 	}
 	c.Path = path
 
-	c.applyDefaults()
+	if defaults {
+		c.applyDefaults()
+	}
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
 }
 
-func discover(dir string) (string, error) {
+// Discover walks up from dir looking for a config, and reports where it stopped.
+func Discover(dir string) (string, error) {
+	found, err := Find(dir)
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", fmt.Errorf("no %s found here or in any parent directory\n"+
+			"  run `secretman init` to create one, or pass --config <path>",
+			DefaultFilenames[0])
+	}
+	return found, nil
+}
+
+// Find is Discover without the opinion: "" and no error means nothing found.
+// init needs to tell "absent" from "broken" and act differently on each.
+func Find(dir string) (string, error) {
 	if dir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -161,8 +155,7 @@ func discover(dir string) (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no %s found here or in any parent directory\n"+
-				"  create one, or pass --config <path>", DefaultFilenames[0])
+			return "", nil
 		}
 		dir = parent
 	}
@@ -183,29 +176,10 @@ func (c *Config) applyDefaults() {
 	}
 	for i := range c.Secrets {
 		s := &c.Secrets[i]
-		if s.Kind == "" {
-			s.Kind = KindOpaque
-		}
 		if s.Label == "" {
 			s.Label = s.Name
 		}
-		if s.GCPName == "" {
-			s.GCPName = c.gcpPrefix() + s.Key
-		}
-		if s.GenerateBytes == 0 {
-			s.GenerateBytes = 32
-		}
-		if s.Kind == KindPassword && s.MinLength == 0 {
-			s.MinLength = 32
-		}
 	}
-}
-
-func (c *Config) gcpPrefix() string {
-	if c.GCP == nil {
-		return ""
-	}
-	return c.GCP.Prefix
 }
 
 func (c *Config) validate() error {
@@ -247,28 +221,6 @@ func (c *Config) validate() error {
 		}
 		seenKey[s.Key], seenName[s.Name] = true, true
 
-		switch s.Kind {
-		case KindOpaque, KindPassword, KindURL:
-		case KindPrefixed:
-			if s.Prefix == "" {
-				return fmt.Errorf("secret %q is kind 'prefixed' but sets no prefix", s.Key)
-			}
-		default:
-			return fmt.Errorf("secret %q has unknown kind %q", s.Key, s.Kind)
-		}
-
-		for prefix, env := range s.EnvMarkers {
-			if !seenEnv[env] {
-				return fmt.Errorf("secret %q: envMarkers[%q] names unknown environment %q",
-					s.Key, prefix, env)
-			}
-		}
-		for _, env := range s.AllowInsecureIn {
-			if !seenEnv[env] {
-				return fmt.Errorf("secret %q: allowInsecureIn names unknown environment %q",
-					s.Key, env)
-			}
-		}
 		for _, id := range s.Stores {
 			if id != "github" && id != "gcp" {
 				return fmt.Errorf("secret %q: unknown store %q", s.Key, id)

@@ -3,32 +3,7 @@ package secretval
 import (
 	"strings"
 	"testing"
-
-	"github.com/ObsidianCodes/secret-manager/internal/config"
 )
-
-func apiKey() config.Secret {
-	return config.Secret{
-		Key:       "workos-api-key",
-		Name:      "WORKOS_API_KEY",
-		Kind:      config.KindPrefixed,
-		Prefix:    "sk_",
-		MinLength: 20,
-		Conflicts: map[string]string{"client_": "a client id"},
-		EnvMarkers: map[string]string{
-			"sk_live_": "production",
-		},
-	}
-}
-
-func redirectURI() config.Secret {
-	return config.Secret{
-		Key:             "workos-redirect-uri",
-		Name:            "WORKOS_REDIRECT_URI",
-		Kind:            config.KindURL,
-		AllowInsecureIn: []string{"development"},
-	}
-}
 
 // The trailing newline is the bug the whole tool exists to prevent, so it gets
 // the first test.
@@ -77,78 +52,6 @@ func TestSanitizeNeverLeaksTheValue(t *testing.T) {
 	}
 }
 
-func TestValidatePrefixAndConflicts(t *testing.T) {
-	s := apiKey()
-	tests := []struct {
-		name  string
-		value string
-		ok    bool
-	}{
-		{"good key", "sk_test_abcdefghijklmnopqr", true},
-		{"client id in the key field", "client_abcdefghijklmnopqrst", false},
-		{"no prefix", "abcdefghijklmnopqrstuvwx", false},
-		{"too short", "sk_test_a", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := Validate(s, "staging", tc.value)
-			if tc.ok && err != nil {
-				t.Fatalf("expected valid, got %v", err)
-			}
-			if !tc.ok && err == nil {
-				t.Fatal("expected invalid")
-			}
-		})
-	}
-}
-
-// The transposition message must name what the value actually is; "wrong
-// prefix" sends the operator back to the same two adjacent dashboard fields
-// with no idea which one they misread.
-func TestValidateNamesTheTransposition(t *testing.T) {
-	err := Validate(apiKey(), "staging", "client_abcdefghijklmnopqrst")
-	if err == nil || !strings.Contains(err.Error(), "a client id") {
-		t.Fatalf("expected the error to name the value, got %v", err)
-	}
-}
-
-func TestValidateURLPerEnvironment(t *testing.T) {
-	s := redirectURI()
-	if err := Validate(s, "development", "http://localhost:4200/auth/callback"); err != nil {
-		t.Fatalf("localhost should be fine in development: %v", err)
-	}
-	if err := Validate(s, "production", "http://localhost:4200/auth/callback"); err == nil {
-		t.Fatal("localhost must be refused in production")
-	}
-	if err := Validate(s, "production", "https://app.example.com/auth/callback"); err != nil {
-		t.Fatalf("https should be fine anywhere: %v", err)
-	}
-	if err := Validate(s, "production", "app.example.com/auth/callback"); err == nil {
-		t.Fatal("a relative URL must be refused")
-	}
-}
-
-// A live key in staging is accepted by every store and fails only in
-// production, so it is refused here without any network call.
-func TestMarkerMismatch(t *testing.T) {
-	s := apiKey()
-
-	claims, bad := MarkerMismatch(s, "staging", "sk_live_abcdefghijklmnop")
-	if !bad || claims != "production" {
-		t.Fatalf("expected a production marker mismatch, got %q %v", claims, bad)
-	}
-
-	if _, bad := MarkerMismatch(s, "production", "sk_live_abcdefghijklmnop"); bad {
-		t.Fatal("a live key in production is correct")
-	}
-
-	// An unmarked value says nothing about its environment, and must not be
-	// guessed at.
-	if _, bad := MarkerMismatch(s, "production", "sk_test_abcdefghijklmnop"); bad {
-		t.Fatal("sk_test_ has no marker configured, so it cannot mismatch")
-	}
-}
-
 func TestFingerprintIsStableAndShort(t *testing.T) {
 	a := Fingerprint("hello")
 	if a != Fingerprint("hello") {
@@ -176,12 +79,39 @@ func TestGenerateMeetsMinimumLength(t *testing.T) {
 	}
 }
 
-func TestShapeNeverRevealsTheBody(t *testing.T) {
-	got := Shape(apiKey(), "sk_live_THISISTHESECRET")
-	if strings.Contains(got, "THISISTHESECRET") {
-		t.Fatalf("shape leaked the value: %q", got)
+// Sanitize must accept anything a provider might legitimately issue. It is the
+// only gate a value passes through now, so a value it rejects is a value that
+// cannot be rotated at all.
+func TestSanitizeIsFormatAgnostic(t *testing.T) {
+	for _, v := range []string{
+		"sk_live_abc123",
+		"ghp_16C7e42F292c6912E7710c838347Ae178B4a",
+		"AIzaSyD-0123456789abcdefghijklmnopqrstu",
+		"https://app.example.com/auth/callback",
+		"x", // short, odd, and none of this tool's business
+		"{\"type\":\"service_account\"}",
+		"-----BEGIN PRIVATE KEY-----MIIEvQ...-----END PRIVATE KEY-----",
+	} {
+		got, _, err := Sanitize("ANY_NAME", v)
+		if err != nil {
+			t.Errorf("Sanitize refused a legitimate value shape (%q): %v", v, err)
+		}
+		if got != v {
+			t.Errorf("Sanitize altered %q to %q", v, got)
+		}
 	}
-	if !strings.HasPrefix(got, "sk_live_") {
-		t.Fatalf("shape should keep the environment marker, got %q", got)
+}
+
+func TestGenerateIsRandomAndLongEnough(t *testing.T) {
+	v, err := Generate(0) // 0 means the default
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) < 32 {
+		t.Fatalf("the default draw should base64 to at least 32 characters, got %d", len(v))
+	}
+	other, _ := Generate(0)
+	if v == other {
+		t.Fatal("two generated values collided")
 	}
 }

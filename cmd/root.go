@@ -41,28 +41,67 @@ func newRoot() *cobra.Command {
 		Long: `secretman rotates a project's credentials in every store that holds them,
 one environment at a time.
 
-It reads a secrets.yaml describing the project's environments and secrets, so
-one binary serves every project rather than one script per repository.
+It reads a .secretman.yaml describing the project's environments and secrets, so
+one binary serves every project rather than one script per repository. That file
+holds names; it never holds a value, and is meant to be committed.
 
-What it protects against, in order of how expensive each is to diagnose later:
+Getting started:
+
+  secretman init                  create the config, then the environments
+  secretman doctor                check the config and every store's login
+  secretman rotate staging        prompt, validate, write, verify
+  secretman status                what exists where
+
+Changing what is managed:
+
+  secretman config add            add a secret
+  secretman config edit <key>     change one
+  secretman config rm <key>       stop managing one
+  secretman config schema         every config field, annotated
+
+What a rotation protects against, in order of how expensive each is to diagnose
+later:
 
   * a trailing newline on a pasted value, which is invisible in every UI that
     displays a secret, and which no store strips for you
-  * a value pasted into the wrong environment's prompt, which is accepted
-    everywhere and only fails in production
-  * two adjacent dashboard fields transposed, which fails at the first login
+  * a value another environment already holds, pasted into this one, which is
+    accepted everywhere and only fails later, in production
+  * a value mangled by a terminal that wrapped the paste
   * a secret written to one store but not the other, leaving them disagreeing
     about which credential is current
 
+It does not check what a valid value looks like. A rule of that shape needs a
+provider's current key format written down, goes stale without saying so, and
+then refuses a correct credential mid-rotation. Every prompt instead prints the
+store, environment and name it is about to overwrite.
+
 Values are typed at a hidden prompt, passed to gh and gcloud on stdin, and never
-appear in argv, shell history, or this tool's output.`,
+appear in argv, shell history, or this tool's output. Only digests are printed.
+
+Requires gh and gcloud on PATH, both already logged in. secretman reuses their
+credentials, and has none of its own.`,
+		Example: `  # First run in a repository
+  secretman init
+
+  # Routine rotation
+  secretman rotate staging
+
+  # One secret, right now, no picker
+  secretman rotate production --only workos-api-key
+
+  # Rehearse without writing anything
+  secretman rotate production --dry-run
+
+  # Which secrets exist, where
+  secretman status
+  secretman verify`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
 	}
 
 	pf := root.PersistentFlags()
-	pf.StringVarP(&flagConfig, "config", "c", "", "path to secrets.yaml (default: found by walking up from the working directory)")
+	pf.StringVarP(&flagConfig, "config", "c", "", "path to .secretman.yaml (default: found by walking up from the working directory)")
 	pf.StringVar(&flagGCPProject, "gcp-project", "", "override the GCP project id from the config")
 	pf.StringVar(&flagRepo, "repo", "", "override the GitHub repository (owner/name)")
 	pf.StringSliceVar(&flagStores, "store", nil, "limit to these stores: github, gcp")
@@ -72,6 +111,7 @@ appear in argv, shell history, or this tool's output.`,
 
 	root.AddCommand(
 		newInitCmd(),
+		newConfigCmd(),
 		newRotateCmd(),
 		newStatusCmd(),
 		newVerifyCmd(),

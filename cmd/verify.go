@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ObsidianCodes/secret-manager/internal/config"
 	"github.com/ObsidianCodes/secret-manager/internal/secretval"
 	"github.com/ObsidianCodes/secret-manager/internal/store"
 	"github.com/ObsidianCodes/secret-manager/internal/ui"
@@ -29,7 +28,12 @@ character was written by something other than this tool — a web textarea, a
 ` + "`gh secret set X < file`" + `, an ` + "`echo`" + ` in a script. That newline is invisible in
 every UI that displays a secret, so nothing else will ever show it to you.
 
-Only digests are printed. No secret value reaches the terminal.`,
+Only digests are printed. No secret value reaches the terminal.
+
+A write-only store has nothing to verify, so a project on GitHub alone gets an
+empty report rather than a clean bill of health.`,
+		Example: `  secretman verify
+  secretman verify --store gcp`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -86,11 +90,6 @@ Only digests are printed. No secret value reaches the terminal.`,
 							ui.Warn("%s in %s: %s", sec.Name, e.Name, damaged)
 							problems++
 						}
-						if claims, bad := secretval.MarkerMismatch(sec, e.Name, v); bad {
-							ui.Warn("%s in %s: the stored value is marked as %s",
-								sec.Name, e.Name, claims)
-							problems++
-						}
 					}
 
 					for fp, envs := range byDigest {
@@ -144,13 +143,9 @@ func describeDamage(v string) string {
 
 // verifyOne is kept for symmetry with rotate's per-secret handling; it exists so
 // the damage rules have a single caller-visible entry point in tests.
-func verifyOne(sec config.Secret, envName, v string) []string {
-	var out []string
+func verifyOne(v string) []string {
 	if d := describeDamage(v); d != "" {
-		out = append(out, d)
+		return []string{d}
 	}
-	if claims, bad := secretval.MarkerMismatch(sec, envName, v); bad {
-		out = append(out, "value is marked as "+claims)
-	}
-	return out
+	return nil
 }

@@ -1,7 +1,7 @@
 bin/
 dist/
 
-# A project's own secrets.yaml names secrets but holds none - it is meant to be
+# A project's own .secretman.yaml names secrets but holds none - it is meant to be
 # committed in the project it describes. Anything matching these is not that.
 *.env
 .env

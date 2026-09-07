@@ -25,24 +25,40 @@ func newRotateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "rotate <environment>",
 		Short: "Rotate one environment's secrets in every store",
-		Long: `Prompts for each secret, validates it, and writes it to every configured store.
+		Long: `Prompts for each secret and writes it to every store configured for it.
 
-Leave a prompt blank to leave that secret alone. Secrets marked generatable in
-the config offer a freshly generated random value instead of a typed one.
+Each prompt is preceded by the exact names it is about to overwrite — the store,
+the environment, and the name within it — so the thing being changed is on
+screen before anything is typed. Every prompt also offers a value generated from
+crypto/rand, for the secrets you invent rather than collect.
 
-Every value is checked before anything is written:
+Leave a prompt blank to leave that secret alone. Nothing is written until the
+confirmation at the end, so interrupting before it costs nothing.
+
+Every value is handled the same way, whatever provider issued it:
 
   * pasted NAME=, surrounding quotes and stray whitespace are stripped, and the
     stripping is reported, because the value written is then not the value typed
   * a value carrying a control character is refused outright: that is almost
     always a terminal-wrapped paste, and repairing it by guessing would write a
     silently truncated credential
-  * a value whose own prefix says it belongs to another environment is refused
   * a value identical to one another environment already holds is refused
 
-The last two are the ones worth the trouble. A wrong-environment credential is
-accepted by every store, passes every syntactic check, and only fails later, in
-production, as an authentication error that names nothing useful.`,
+The last is the one worth the trouble, and the only one that needs anything
+fetched. A credential pasted from the wrong environment is accepted by every
+store, passes every syntactic check, and only fails later, in production, as an
+authentication error that names nothing useful.`,
+		Example: `  # Pick from a list, then prompt for each
+  secretman rotate staging
+
+  # One secret, no picker — the emergency path
+  secretman rotate production --only workos-api-key
+
+  # Everything except the writes
+  secretman rotate production --dry-run
+
+  # A value another environment already holds, on purpose
+  secretman rotate development --only workos-redirect-uri --no-cross-check`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRotate(cmd.Context(), args[0])
@@ -295,40 +311,37 @@ func (s *session) collect(
 	var out []pending
 
 	for _, sec := range secs {
+		// The targets are printed before anything is asked. This is what
+		// replaced a config full of format rules: nothing here guesses whether
+		// a value is the right one, so the operator is instead told exactly
+		// which name in which store they are about to overwrite, while they
+		// still have the dashboard open in front of them.
+		s.showTargets(sec, env)
+
 		mode := "type"
-		if sec.Generate {
-			mode = "generate"
-			form := huh.NewForm(huh.NewGroup(
-				huh.NewSelect[string]().
-					Title(sec.Name).
-					Description(sec.Label).
-					Options(
-						huh.NewOption("Generate a new random value", "generate"),
-						huh.NewOption("Type or paste a value", "type"),
-						huh.NewOption("Leave it alone", "skip"),
-					).
-					Value(&mode),
-			)).WithTheme(huh.ThemeCharm())
-			if err := form.Run(); err != nil {
-				return nil, err
-			}
+		if err := huh.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(sec.Label).
+				Description(sec.Help).
+				Options(
+					huh.NewOption("Type or paste a value", "type"),
+					huh.NewOption("Generate a random value", "generate"),
+					huh.NewOption("Leave it alone", "skip"),
+				).
+				Value(&mode),
+		)).WithTheme(theme()).Run(); err != nil {
+			return nil, err
 		}
 
 		switch mode {
 		case "skip":
+			ui.Note("%s — left alone", sec.Name)
 			continue
 
 		case "generate":
-			v, err := secretval.Generate(sec.GenerateBytes)
+			v, err := secretval.Generate(0)
 			if err != nil {
 				return nil, err
-			}
-			// A generated value still goes through validation: a config that
-			// asks for 16 bytes for a secret needing 32 characters should fail
-			// here, not at the next login.
-			if err := secretval.Validate(sec, env.Name, v); err != nil {
-				return nil, fmt.Errorf("%s: generated value is invalid: %w\n"+
-					"  raise generateBytes in the config", sec.Key, err)
 			}
 			out = append(out, pending{sec: sec, value: v, generated: true})
 			ui.OK("%s — generated, %d characters, %s",
@@ -347,20 +360,25 @@ func (s *session) collect(
 	return out, nil
 }
 
+// showTargets prints every name this secret is about to be written to.
+func (s *session) showTargets(sec config.Secret, env config.Environment) {
+	ui.Step("%s › %s", sec.Name, env.Name)
+	for _, st := range s.storesFor(sec) {
+		ui.Note("%-22s %s", st.ID(), st.Target(sec, env))
+	}
+	if sec.Help != "" {
+		ui.Note("%-22s %s", "where", sec.Help)
+	}
+}
+
 // promptValue runs the hidden input for one secret. huh re-prompts on a
 // validation error without losing the rest of the session, which is the whole
-// reason the validators are pure and pre-fetched.
+// reason the checks are pure and everything they need is pre-fetched.
 func promptValue(
 	sec config.Secret, env config.Environment, known map[string]string,
 ) (pending, bool, error) {
 	var raw string
 	var notes []string
-
-	help := sec.Help
-	if help == "" {
-		help = sec.Label
-	}
-	help += "  ·  blank to leave it alone"
 
 	validate := func(in string) error {
 		notes = nil
@@ -374,17 +392,10 @@ func promptValue(
 		}
 		notes = n
 
-		if err := secretval.Validate(sec, env.Name, clean); err != nil {
-			return err
-		}
-
+		// The one cross-check left, and the only one that needs no knowledge of
+		// any provider's key format: this exact value already lives in another
+		// environment, so it was almost certainly pasted from there.
 		if !flagNoCheck {
-			if claims, bad := secretval.MarkerMismatch(sec, env.Name, clean); bad {
-				return fmt.Errorf(
-					"this value is marked as %s, and you are rotating %s\n"+
-						"if that is genuinely intended, re-run with --no-cross-check",
-					claims, env.Name)
-			}
 			if other, dup := known[secretval.Fingerprint(clean)]; dup {
 				return fmt.Errorf(
 					"%s already holds exactly this value\n"+
@@ -398,11 +409,11 @@ func promptValue(
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewInput().
 			Title(sec.Name).
-			Description(help).
+			Description("blank to leave it alone").
 			EchoMode(huh.EchoModePassword).
 			Value(&raw).
 			Validate(validate),
-	)).WithTheme(huh.ThemeCharm())
+	)).WithTheme(theme())
 
 	if err := form.Run(); err != nil {
 		return pending{}, false, err
@@ -422,8 +433,7 @@ func promptValue(
 	for _, note := range notes {
 		ui.Warn("%s — %s", sec.Name, note)
 	}
-	ui.OK("%s — %s, %d characters, %s",
-		sec.Name, secretval.Shape(sec, clean), len(clean),
+	ui.OK("%s — %d characters, %s", sec.Name, len(clean),
 		ui.Fingerprint(secretval.Fingerprint(clean)))
 
 	return pending{sec: sec, value: clean, notes: notes}, true, nil
@@ -550,10 +560,13 @@ func (s *session) epilogue(env config.Environment, values []pending) {
 	item("If this was a leak rather than a scheduled rotation, revoke the old\n" +
 		"     credential at its source too. Writing a new one does not disable the old.")
 
+	// A generated value is one nothing else has ever seen, so if anything was
+	// already sealed or signed with the old one, it stops working now.
 	for _, p := range values {
-		if p.generated && p.sec.Kind == config.KindPassword {
-			item("%s seals existing sessions. Rotating it signs every current %s user\n"+
-				"     out; that is expected.", p.sec.Name, env.Name)
+		if p.generated {
+			item("%s was generated here, so nothing else holds the previous value.\n"+
+				"     Anything it sealed — sessions, cookies, signed tokens — is invalid\n"+
+				"     from the moment %s picks this up.", p.sec.Name, env.Name)
 			break
 		}
 	}

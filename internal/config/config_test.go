@@ -22,16 +22,13 @@ environments:
 secrets:
   - key: workos-api-key
     name: WORKOS_API_KEY
-    kind: prefixed
-    prefix: sk_
-    envMarkers:
-      sk_live_: production
+    help: Dashboard › API Keys
 `
 
 func write(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
-	p := filepath.Join(dir, "secrets.yaml")
+	p := filepath.Join(dir, ".secretman.yaml")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +78,14 @@ func TestOmittedSuffixDefaultsToTheEnvironmentName(t *testing.T) {
 	}
 }
 
-func TestGCPNameIsPrefixed(t *testing.T) {
+func TestLabelDefaultsToName(t *testing.T) {
 	c, err := Load(write(t, minimal), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s, _ := c.Secret("workos-api-key")
-	if s.GCPName != "lsr-workos-api-key" {
-		t.Fatalf("got %q", s.GCPName)
+	if s.Label != s.Name {
+		t.Fatalf("label = %q, want the name %q", s.Label, s.Name)
 	}
 }
 
@@ -116,12 +113,15 @@ func TestValidationErrors(t *testing.T) {
 		want string
 	}{
 		{"no project", strings.Replace(minimal, "project: lsr", "", 1), "project is required"},
-		{"unknown kind",
-			strings.Replace(minimal, "kind: prefixed", "kind: nonsense", 1), "unknown kind"},
-		{"prefixed without prefix",
-			strings.Replace(minimal, "    prefix: sk_\n", "", 1), "sets no prefix"},
-		{"marker names a missing environment",
-			strings.Replace(minimal, "sk_live_: production", "sk_live_: nowhere", 1), "unknown environment"},
+		{"no name",
+			strings.Replace(minimal, "    name: WORKOS_API_KEY\n", "", 1), "has no name"},
+		{"unknown store",
+			minimal + "    stores: [vault]\n", `unknown store "vault"`},
+		{"no store configured",
+			strings.Replace(strings.Replace(minimal,
+				"github:\n  repo: ObsidianCodes/lsr\n", "", 1),
+				"gcp:\n  project: lifespanrecords\n  prefix: lsr-\n", "", 1),
+			"configure at least one store"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

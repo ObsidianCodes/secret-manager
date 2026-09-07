@@ -20,6 +20,8 @@ running on a value nobody has set since the last person left?
 
 Presence only. No value is read, and nothing here says whether two environments
 hold the same value — for that, use verify.`,
+		Example: `  secretman status
+  secretman status --store github     # one store's matrix only`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

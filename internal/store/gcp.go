@@ -17,6 +17,9 @@ import (
 // be verified by reading it back.
 type GCP struct {
 	project string
+	// prefix is prepended to every name, so several projects can share one GCP
+	// project. Decided once, at init; never per secret.
+	prefix string
 	// runtimeSA, when set, is granted secretAccessor on every secret this tool
 	// creates. A new secret the runtime cannot read fails at the next cold
 	// start, a long way from here.
@@ -28,6 +31,7 @@ func NewGCP(cfg *config.Config, projectOverride string) *GCP {
 	g := &GCP{}
 	if cfg.GCP != nil {
 		g.project = cfg.GCP.Project
+		g.prefix = cfg.GCP.Prefix
 	}
 	if projectOverride != "" {
 		g.project = projectOverride
@@ -88,7 +92,7 @@ func (g *GCP) Preflight(ctx context.Context) error {
 }
 
 func (g *GCP) Target(s config.Secret, e config.Environment) string {
-	return s.GCPName + e.Suffix()
+	return g.prefix + s.Key + e.Suffix()
 }
 
 func (g *GCP) List(ctx context.Context, e config.Environment) (map[string]bool, error) {
