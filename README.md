@@ -112,7 +112,7 @@ secretman init --print     # show what it would write, write nothing
 secretman init --force     # replace an existing config without asking
 ```
 
-Asks which stores you use, the repo, the GCP project, and the prefix. It suggests answers from `gh repo view` and `gcloud config get-value project`, so mostly you press Enter.
+Asks which stores you use, the repo, the GCP project, and the prefix. The GCP project comes from a list of what `gcloud projects list` sees — you pick one, you never type an id. No projects, no init: make one with `gcloud projects create` first. The repo is suggested from `gh repo view`, so mostly you press Enter.
 
 If a config already exists it stops and asks first. The warning is specific: changing `repo` or `prefix` doesn't edit anything, it points secretman somewhere else entirely. The secrets it was managing keep existing and keep working, they just stop being visible to this tool. Worth understanding before you say yes.
 

@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/huh/spinner"
 	"github.com/spf13/cobra"
 
 	"github.com/ObsidianCodes/secret-manager/internal/config"
@@ -27,7 +29,8 @@ func newInitCmd() *cobra.Command {
 		Long: `Asks three things and writes them down.
 
   github.repo    which repository holds the Actions secrets
-  gcp.project    which GCP project holds the Secret Manager secrets
+  gcp.project    which GCP project holds the Secret Manager secrets, picked
+                 from the list gcloud can see — never typed
   gcp.prefix     which name prefix within it belongs to this project
 
 That is the entire config. No secret is named in it, so it cannot be wrong
@@ -238,12 +241,28 @@ func wizardConfig(ctx context.Context) (*config.Config, error) {
 	}
 
 	if has(stores, "gcp") {
+		projects, err := listGCPProjects(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(projects) == 0 {
+			return nil, errNoGCPProjects
+		}
+		// The current gcloud project, when it is one of these, is only a
+		// starting position in the list — never an answer nobody looked at.
+		if !hasProject(projects, gcpProject) {
+			gcpProject = projects[0].ID
+		}
+
 		if err := huh.NewForm(huh.NewGroup(
-			huh.NewInput().
-				Title("GCP project id").
-				Description("the id, not the display name — they are often different").
+			huh.NewSelect[string]().
+				Title("GCP project").
+				Description("type to filter · enter to pick").
+				Options(projectOptions(projects)...).
+				Height(12).
+				Filtering(true).
 				Value(&gcpProject).
-				Validate(notBlank("GCP project id")),
+				Validate(notBlank("GCP project")),
 
 			huh.NewInput().
 				Title("Secret name prefix").
@@ -288,6 +307,84 @@ func detectGCPProject(ctx context.Context) string {
 		return ""
 	}
 	return v
+}
+
+// gcpProject is one project the active gcloud account can see.
+type gcpProject struct {
+	ID   string `json:"projectId"`
+	Name string `json:"name"`
+}
+
+// errNoGCPProjects is the dead end: there is nothing to pick, and creating a
+// project is not this tool's job. It creates no project, no environment and no
+// secret — it only points at ones that exist.
+var errNoGCPProjects = fmt.Errorf("the active gcloud account can see no GCP projects\n" +
+	"  secretman does not create projects. Create one first:\n" +
+	"    gcloud projects create <id>\n" +
+	"  or, if this is the wrong account, switch it:\n" +
+	"    gcloud auth login\n" +
+	"  then run `secretman init` again")
+
+// listGCPProjects asks gcloud what the active account can see.
+//
+// The project id is never typed here. It is not the project NAME, the two are
+// usually different, and a typo produces a config that points at nothing —
+// discovered later, by a rotation, with the other store already written.
+func listGCPProjects(ctx context.Context) ([]gcpProject, error) {
+	if err := shell.Require("gcloud"); err != nil {
+		return nil, fmt.Errorf("%w\n  init needs it to list the GCP projects you can see", err)
+	}
+
+	var (
+		out []gcpProject
+		err error
+	)
+	ui.Blank()
+	_ = spinner.New().
+		Title(" asking gcloud which projects you can see…").
+		Action(func() { out, err = fetchGCPProjects(ctx) }).
+		Run()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func fetchGCPProjects(ctx context.Context) ([]gcpProject, error) {
+	res, err := shell.Run(ctx, "gcloud", "projects", "list",
+		"--sort-by=projectId", "--format=json(projectId,name)")
+	if err != nil {
+		return nil, fmt.Errorf("listing GCP projects: %w\n"+
+			"  if the account is not logged in, run: gcloud auth login", err)
+	}
+	var rows []gcpProject
+	if err := json.Unmarshal([]byte(res.Stdout), &rows); err != nil {
+		return nil, fmt.Errorf("parsing gcloud projects list: %w", err)
+	}
+	return rows, nil
+}
+
+func projectOptions(projects []gcpProject) []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(projects))
+	for _, p := range projects {
+		label := p.ID
+		// The display name is shown because it is what the operator recognises,
+		// and the id is what gets written, so both have to be visible at once.
+		if p.Name != "" && p.Name != p.ID {
+			label += "  (" + p.Name + ")"
+		}
+		opts = append(opts, huh.NewOption(label, p.ID))
+	}
+	return opts
+}
+
+func hasProject(projects []gcpProject, id string) bool {
+	for _, p := range projects {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultPrefix suggests <repo-name>- so the GCP project can hold more than one
