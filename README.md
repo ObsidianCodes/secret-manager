@@ -1,8 +1,8 @@
 # secretman
 
-Rotate a project's credentials in the stores that hold them. One walk, no local list.
+Rotate a project's credentials in the stores that hold them.
 
-The config is coordinates only: which GitHub repository, which GCP project, which name prefix. What exists is read from the stores on every run, so there is nothing to keep in sync and nothing that can go stale.
+The config is coordinates only: which GitHub repository, which GCP project, which name prefix. What exists is read from the stores on every run
 
 ```sh
 secretman init      # write .secretman.yaml
@@ -34,7 +34,9 @@ go install github.com/ObsidianCodes/secret-manager@latest
 make build && ./bin/secretman
 ```
 
-secretman shells out to `gh` and `gcloud` for whichever stores the config enables. Both CLIs already hold your login; this tool never asks for a token of its own, and never stores one. Values go to those CLIs on **stdin, never argv** — argv is visible in `ps`.
+secretman shells out to `gh` and `gcloud` for whichever stores the config enables. 
+Both CLIs already hold your login; this tool never asks for a token of its own, and never stores one. 
+Values go to those CLIs on **stdin, never argv** — argv is visible in `ps`.
 
 ## Config
 

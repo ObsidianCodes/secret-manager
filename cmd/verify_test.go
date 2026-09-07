@@ -98,3 +98,22 @@ func TestEntryIDDistinguishesEnvironments(t *testing.T) {
 		t.Error("the same entry has an unstable ID")
 	}
 }
+
+// --dry-run promises that nothing is created anywhere. init wrote the config
+// regardless once, which is the one file this tool creates at all.
+func TestInitWritesOnlyWhenNeitherFlagIsSet(t *testing.T) {
+	cases := []struct {
+		print, dryRun, write bool
+	}{
+		{false, false, true}, // an ordinary init
+		{false, true, false}, // --dry-run
+		{true, false, false}, // --print
+		{true, true, false},  // both
+	}
+	for _, tc := range cases {
+		if got := initWillWrite(tc.print, tc.dryRun); got != tc.write {
+			t.Errorf("initWillWrite(print=%v, dryRun=%v) = %v, want %v",
+				tc.print, tc.dryRun, got, tc.write)
+		}
+	}
+}

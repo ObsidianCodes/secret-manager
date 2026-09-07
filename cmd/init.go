@@ -88,12 +88,21 @@ func runInit(ctx context.Context) error {
 		return err
 	}
 
-	if flagInitPrint {
+	if !initWillWrite(flagInitPrint, flagDryRun) {
 		out, err := config.Marshal(cfg)
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(out))
+		if flagInitPrint {
+			fmt.Print(string(out))
+			return nil
+		}
+		ui.Blank()
+		ui.Step("Would write %s", path)
+		fmt.Println(ui.Indent(strings.TrimRight(string(out), "\n"), 2))
+		ui.Blank()
+		ui.OK("dry run complete; nothing written")
+		ui.Blank()
 		return nil
 	}
 
@@ -252,6 +261,14 @@ func wizardConfig(ctx context.Context) (*config.Config, error) {
 
 	return cfg, cfg.Validate()
 }
+
+// initWillWrite says whether init may touch the filesystem.
+//
+// --print puts the config on stdout to be piped somewhere; --dry-run is a
+// rehearsal. Both stop before the write. A config written during a rehearsal is
+// a file the operator did not ask for, left in a directory they were only
+// looking at, and --dry-run promises no file is created anywhere.
+func initWillWrite(print, dryRun bool) bool { return !print && !dryRun }
 
 func detectRepo(ctx context.Context) string {
 	res, err := shell.Run(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
