@@ -51,7 +51,7 @@ No secret is named in it. Every command asks the stores directly (`gh secret lis
 
 The `prefix` matters on the GCP side. Secret Manager is one flat namespace per project, and most GCP projects hold secrets for more than one thing. Anything starting with `lsr-` is yours. Everything else secretman won't list, won't touch, won't offer to delete.
 
-Unknown keys in the file are an error rather than a shrug, so a typo can't quietly disable something.
+An unknown key is an error. Misspell one and the command stops instead of ignoring it.
 
 ## Rotating
 
