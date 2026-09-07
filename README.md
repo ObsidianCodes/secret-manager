@@ -65,7 +65,7 @@ github:WORKOS_API_KEY:staging
     3. Type or paste a value
 ```
 
-Store, then the name spelled the way that store spells it, then the environment if there is one. GitHub knows this secret as `WORKOS_API_KEY` inside the `staging` environment. Secret Manager knows the same credential as `lsr-workos-api-key-staging` and has no concept of environments at all. Both get shown as they really are; secretman doesn't try to reconcile them into some tidier abstraction that neither store would recognise.
+Store, then the name spelled the way that store spells it, then the environment if there is one. GitHub knows this secret as `WORKOS_API_KEY` inside the `staging` environment. Secret Manager knows the same credential as `lsr-workos-api-key-staging` and has no concept of environments at all. Both get shown as they really are.
 
 "Leave as is" is first and selected, so you can hold Enter through a long walk without ever arming a write.
 
