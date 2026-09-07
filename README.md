@@ -20,9 +20,17 @@ curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master
   | INSTALL_DIR=/usr/local/bin VERSION=v0.2.3 sh
 ```
 
-The script figures out your OS and architecture, pulls that tarball, checks the sha256 against the published checksums, and drops the binary in place. It's one file and it's short, so read it first if you'd rather.
+The script figures out your OS and architecture, pulls that tarball, checks the sha256 against the published checksums, and drops the binary in place. It's one file and it's short, so give it a read first if that's your habit.
 
-There's also `go install github.com/ObsidianCodes/secret-manager@latest`, or `make build` for a local `./bin/secretman`.
+Prefer to build it yourself:
+
+```
+go install github.com/ObsidianCodes/secret-manager@latest
+```
+
+```
+make build     # ./bin/secretman
+```
 
 You'll need `gh` and `gcloud` installed and logged in. secretman borrows their credentials and never asks for any of its own.
 
