@@ -109,7 +109,7 @@ The walk.
 1. Preflight both stores — wrong project id, expired login, Secret Manager API not enabled. Fail here, not halfway through a write.
 2. Ask the stores what they hold. That is the list. There is no other list.
 3. Digest everything readable, so “already in use” can be named.
-4. Per entry: print `store:name:env` → type / generate / skip → hidden prompt → sanitize → offer to reuse the value on untouched entries.
+4. Per entry: print `store:name:env` → leave / generate / type → hidden prompt → sanitize → offer to reuse the value on untouched entries.
 5. Table of every pending write: STORE, ENVIRONMENT, NAME, DIGEST, SOURCE. Equal digests mean the same value is going to both places, visible before you confirm.
 6. Confirm. Write. Read back where the store allows.
 7. Print what to do next — redeploy, leave old GCP versions enabled for rollback, revoke at the source if this was a leak.

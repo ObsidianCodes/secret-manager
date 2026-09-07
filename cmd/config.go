@@ -185,8 +185,8 @@ func askValue(name string) (value string, generated bool, err error) {
 		huh.NewSelect[string]().
 			Title("Value for "+name).
 			Options(
-				huh.NewOption("Type or paste a value", "type"),
-				huh.NewOption("Generate a random value", "generate"),
+				huh.NewOption("1. Type or paste a value", "type"),
+				huh.NewOption("2. Generate a random value", "generate"),
 			).
 			Value(&mode),
 	)).WithTheme(theme()).Run(); err != nil {

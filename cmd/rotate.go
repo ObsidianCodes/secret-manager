@@ -233,15 +233,18 @@ func (s *session) readExisting(ctx context.Context, entries []store.Entry) map[s
 
 // promptEntry asks for one value.
 func promptEntry(e store.Entry, known map[string]string) (pending, bool, error) {
-	mode := "type"
+	// "Leave as is" first, and therefore selected by default: a walk is mostly
+	// secrets you are not touching, and Enter should carry you through them
+	// without ever arming a write.
+	mode := "skip"
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[string]().
 			Title(e.Name).
 			Description(e.Label()).
 			Options(
-				huh.NewOption("Type or paste a value", "type"),
-				huh.NewOption("Generate a random value", "generate"),
-				huh.NewOption("Leave it alone", "skip"),
+				huh.NewOption("1. Leave as is", "skip"),
+				huh.NewOption("2. Generate a random value", "generate"),
+				huh.NewOption("3. Type or paste a value", "type"),
 			).
 			Value(&mode),
 	)).WithTheme(theme()).Run(); err != nil {
@@ -250,7 +253,7 @@ func promptEntry(e store.Entry, known map[string]string) (pending, bool, error) 
 
 	switch mode {
 	case "skip":
-		ui.Note("left alone")
+		ui.Note("left as is")
 		return pending{}, false, nil
 
 	case "generate":
@@ -275,7 +278,7 @@ func promptEntry(e store.Entry, known map[string]string) (pending, bool, error) 
 	if err := huh.NewForm(huh.NewGroup(
 		huh.NewInput().
 			Title(e.Name).
-			Description("blank to leave it alone").
+			Description("blank to leave it as is").
 			EchoMode(huh.EchoModePassword).
 			Value(&raw).
 			Validate(validate),
@@ -284,7 +287,7 @@ func promptEntry(e store.Entry, known map[string]string) (pending, bool, error) 
 	}
 
 	if strings.TrimSpace(raw) == "" {
-		ui.Note("left alone")
+		ui.Note("left as is")
 		return pending{}, false, nil
 	}
 

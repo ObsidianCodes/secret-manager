@@ -63,7 +63,9 @@ func runInit(ctx context.Context) error {
 
 	ui.Title("secretman › init")
 
-	if existing {
+	if !existing {
+		noteInheritedConfig(path)
+	} else {
 		ui.Note("config %s", path)
 		ok, err := confirmReplace(path)
 		if err != nil {
@@ -112,24 +114,37 @@ func runInit(ctx context.Context) error {
 }
 
 // initTarget decides which file init is about, and whether it already exists.
+//
+// Deliberately does NOT walk up the way every other command does. A config in a
+// parent directory belongs to a different project, and treating it as this
+// project's makes init refuse to initialise anything nested inside another
+// repository — which is the one thing init is for. Only the file at the target
+// path counts.
 func initTarget() (path string, existing bool, err error) {
 	if flagConfig != "" {
-		if st, err := os.Stat(flagConfig); err == nil && !st.IsDir() {
-			return flagConfig, true, nil
-		}
-		return flagConfig, false, nil
-	}
-
-	found, err := config.Find("")
-	if err != nil {
+		path = flagConfig
+	} else if path, err = config.DefaultPath(""); err != nil {
 		return "", false, err
 	}
-	if found != "" {
-		return found, true, nil
-	}
+	st, err := os.Stat(path)
+	return path, err == nil && !st.IsDir(), nil
+}
 
-	path, err = config.DefaultPath("")
-	return path, false, err
+// noteInheritedConfig mentions a config in a parent directory.
+//
+// It is not this project's and init will not touch it, but it is what every
+// other command run from here would have used until this moment, so silence
+// about it would be its own surprise.
+func noteInheritedConfig(path string) {
+	found, err := config.Find("")
+	if err != nil || found == "" || found == path {
+		return
+	}
+	if abs, err := filepath.Abs(path); err == nil && abs == found {
+		return
+	}
+	ui.Note("a config also exists at %s, in a parent directory", found)
+	ui.Note("it belongs to whatever lives there; this writes a new one here")
 }
 
 func confirmReplace(path string) (bool, error) {
