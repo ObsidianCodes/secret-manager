@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ObsidianCodes/secret-manager/internal/config"
 	"github.com/ObsidianCodes/secret-manager/internal/shell"
 )
 
-// GitHub writes environment-scoped GitHub Actions secrets via the gh CLI.
+// GitHub reads and writes GitHub Actions secrets via the gh CLI.
+//
+// Names are listable; values are not. That asymmetry is why this store can be
+// enumerated and walked like any other, but can never be verified: the digest
+// of what was sent is the only record a write here will ever leave.
 type GitHub struct {
 	repo string
 }
@@ -53,67 +58,95 @@ func (g *GitHub) Preflight(ctx context.Context) error {
 	return nil
 }
 
-func (g *GitHub) Target(s config.Secret, e config.Environment) string {
-	return e.GitHubEnv + "/" + s.Name
+// Environments lists the repository's GitHub Environments.
+func (g *GitHub) Environments(ctx context.Context) ([]string, error) {
+	res, err := shell.Run(ctx, "gh", "api",
+		fmt.Sprintf("repos/%s/environments", g.repo), "-q", ".environments[].name")
+	if err != nil {
+		// A repository with no environments returns an error on some plans
+		// rather than an empty list, and that is not a failure: it means every
+		// secret here is repository-scoped.
+		return nil, nil
+	}
+	var out []string
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
-func (g *GitHub) List(ctx context.Context, e config.Environment) (map[string]bool, error) {
-	res, err := shell.Run(ctx, "gh", "secret", "list",
-		"--repo", g.repo, "--env", e.GitHubEnv, "--json", "name")
+// Enumerate lists repository-scoped secrets, then each environment's.
+func (g *GitHub) Enumerate(ctx context.Context) ([]Entry, error) {
+	var out []Entry
+
+	for _, name := range g.names(ctx, "") {
+		out = append(out, Entry{Store: g.ID(), Name: name})
+	}
+
+	envs, err := g.Environments(ctx)
 	if err != nil {
-		// An environment with no secrets, or one that does not exist yet, is
-		// not an error here: the caller only wants to label a write "create"
-		// rather than "overwrite".
-		return map[string]bool{}, nil
+		return nil, err
 	}
-	var rows []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal([]byte(res.Stdout), &rows); err != nil {
-		return nil, fmt.Errorf("parsing gh secret list: %w", err)
-	}
-	out := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		out[r.Name] = true
+	for _, env := range envs {
+		for _, name := range g.names(ctx, env) {
+			out = append(out, Entry{Store: g.ID(), Name: name, Env: env})
+		}
 	}
 	return out, nil
 }
 
-func (g *GitHub) Write(ctx context.Context, s config.Secret, e config.Environment, value string) error {
+// names lists secret names at the repository level, or within one environment.
+func (g *GitHub) names(ctx context.Context, env string) []string {
+	args := []string{"secret", "list", "--repo", g.repo, "--json", "name"}
+	if env != "" {
+		args = append(args, "--env", env)
+	}
+	res, err := shell.Run(ctx, "gh", args...)
+	if err != nil {
+		return nil // no secrets, or no access to that environment
+	}
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal([]byte(res.Stdout), &rows) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (g *GitHub) Write(ctx context.Context, e Entry, value string) error {
 	// stdin, not --body: --body would put the credential on the command line,
 	// where it is visible in `ps` to every other user on the machine.
-	_, err := shell.RunStdin(ctx, value, "gh", "secret", "set", s.Name,
-		"--repo", g.repo, "--env", e.GitHubEnv)
+	args := []string{"secret", "set", e.Name, "--repo", g.repo}
+	if e.Env != "" {
+		args = append(args, "--env", e.Env)
+	}
+	_, err := shell.RunStdin(ctx, value, "gh", args...)
 	return err
 }
 
-func (g *GitHub) Read(ctx context.Context, s config.Secret, e config.Environment) (string, error) {
+func (g *GitHub) Read(ctx context.Context, e Entry) (string, error) {
 	return "", ErrWriteOnly
 }
 
-// EnsureEnvironments creates the GitHub Environments the secrets are scoped to.
-//
-// An environment-scoped secret cannot be written until its environment exists,
-// and the PUT is idempotent, so this runs on every rotation rather than only
-// under `init`: one redundant API call is cheaper than a rotation that fails
-// because someone deleted an environment last week.
-func (g *GitHub) EnsureEnvironments(ctx context.Context, envs []config.Environment, dryRun bool, log func(string, bool)) error {
-	for _, e := range envs {
-		path := fmt.Sprintf("repos/%s/environments/%s", g.repo, e.GitHubEnv)
-		if shell.Quiet(ctx, "gh", "api", path) {
-			log(fmt.Sprintf("environment %s exists", e.GitHubEnv), true)
-			continue
-		}
-		if dryRun {
-			log(fmt.Sprintf("environment %s is missing (dry run - not creating it)", e.GitHubEnv), false)
-			continue
-		}
-		if _, err := shell.Run(ctx, "gh", "api", "--method", "PUT", path); err != nil {
-			return fmt.Errorf("could not create environment %s: %w\n"+
-				"  environments on a private repository need GitHub Pro / Team / Enterprise,\n"+
-				"  and the token needs the 'repo' scope", e.GitHubEnv, err)
-		}
-		log(fmt.Sprintf("created environment %s", e.GitHubEnv), true)
+// EnsureEnvironment creates a GitHub Environment. The PUT is idempotent.
+func (g *GitHub) EnsureEnvironment(ctx context.Context, name string) (created bool, err error) {
+	path := fmt.Sprintf("repos/%s/environments/%s", g.repo, name)
+	if shell.Quiet(ctx, "gh", "api", path) {
+		return false, nil
 	}
-	return nil
+	if _, err := shell.Run(ctx, "gh", "api", "--method", "PUT", path); err != nil {
+		return false, fmt.Errorf("could not create environment %s: %w\n"+
+			"  environments on a private repository need GitHub Pro / Team / Enterprise,\n"+
+			"  and the token needs the 'repo' scope", name, err)
+	}
+	return true, nil
 }

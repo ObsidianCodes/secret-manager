@@ -3,6 +3,8 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/ObsidianCodes/secret-manager/internal/store"
 )
 
 // A stored value ending in a newline is the failure verify exists to surface:
@@ -36,23 +38,63 @@ func TestDescribeDamage(t *testing.T) {
 	}
 }
 
-func TestVerifyOneReportsDamageOnly(t *testing.T) {
-	if got := verifyOne("sk_live_abcdef\n"); len(got) != 1 {
-		t.Fatalf("expected the newline to be reported, got %v", got)
+func TestCompareEnvironmentsFindsWhatIsMissing(t *testing.T) {
+	entries := []store.Entry{
+		{Store: "github", Env: "production", Name: "API_KEY"},
+		{Store: "github", Env: "production", Name: "CLIENT_ID"},
+		{Store: "github", Env: "staging", Name: "API_KEY"},
+		{Store: "github", Env: "staging", Name: "CLAIM_TOKEN"},
 	}
 
-	// Whether this value belongs in this environment is not a question with a
-	// reliable answer, and verify no longer pretends otherwise.
-	if got := verifyOne("sk_live_abcdef"); len(got) != 0 {
-		t.Fatalf("expected no problems, got %v", got)
+	got := compareEnvironments(entries)
+	joined := strings.Join(got, "\n")
+
+	if !strings.Contains(joined, "CLIENT_ID is missing from staging") {
+		t.Errorf("did not report the name staging lacks:\n%s", joined)
+	}
+	if !strings.Contains(joined, "CLAIM_TOKEN is missing from production") {
+		t.Errorf("drift is worth reporting in both directions:\n%s", joined)
+	}
+	// Present everywhere is not news.
+	if strings.Contains(joined, "API_KEY") {
+		t.Errorf("reported a name that every environment holds:\n%s", joined)
 	}
 }
 
-func TestLastSegment(t *testing.T) {
-	if got := lastSegment("production/WORKOS_API_KEY"); got != "WORKOS_API_KEY" {
-		t.Fatalf("got %q", got)
+// One environment cannot differ from itself, and saying so would be noise on
+// every repository that scopes nothing.
+func TestCompareEnvironmentsStaysQuietWithOneEnvironment(t *testing.T) {
+	entries := []store.Entry{
+		{Store: "github", Env: "production", Name: "API_KEY"},
+		{Store: "github", Name: "REPO_WIDE"},
 	}
-	if got := lastSegment("lsr-workos-api-key"); got != "lsr-workos-api-key" {
-		t.Fatalf("got %q", got)
+	if got := compareEnvironments(entries); len(got) != 0 {
+		t.Errorf("expected nothing to report, got %v", got)
+	}
+}
+
+// The label is what the operator reads instead of a validation rule, so it has
+// to say all three things, and it must not invent an environment where the
+// store has none.
+func TestEntryLabel(t *testing.T) {
+	if got := (store.Entry{Store: "github", Name: "API_KEY", Env: "staging"}).Label(); got != "github:API_KEY:staging" {
+		t.Errorf("got %q", got)
+	}
+	if got := (store.Entry{Store: "gcp", Name: "lsr-api-key-staging"}).Label(); got != "gcp:lsr-api-key-staging" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// Two entries that differ only by environment must be distinguishable, or a
+// walk would treat them as one.
+func TestEntryIDDistinguishesEnvironments(t *testing.T) {
+	a := store.Entry{Store: "github", Name: "API_KEY", Env: "staging"}
+	b := store.Entry{Store: "github", Name: "API_KEY", Env: "production"}
+	c := store.Entry{Store: "gcp", Name: "API_KEY", Env: "staging"}
+	if a.ID() == b.ID() || a.ID() == c.ID() {
+		t.Error("entries in different places share an ID")
+	}
+	if a.ID() != (store.Entry{Store: "github", Name: "API_KEY", Env: "staging"}).ID() {
+		t.Error("the same entry has an unstable ID")
 	}
 }

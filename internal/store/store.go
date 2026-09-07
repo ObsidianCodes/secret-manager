@@ -1,11 +1,10 @@
-// Package store writes secrets to the places that hold them.
+// Package store reads and writes the places secrets live.
 package store
 
 import (
 	"context"
 	"errors"
-
-	"github.com/ObsidianCodes/secret-manager/internal/config"
+	"fmt"
 )
 
 // ErrWriteOnly is returned by Read on a store that cannot be read back.
@@ -13,12 +12,37 @@ import (
 // which is why a rotation's only proof there is the digest of what was sent.
 var ErrWriteOnly = errors.New("this store is write-only")
 
-// ErrNotFound is returned by Read when the secret does not exist yet.
+// ErrNotFound is returned by Read when the secret does not exist.
 var ErrNotFound = errors.New("not found")
 
-// Store is one place a secret lives.
+// Entry is one secret as a store actually holds it, right now.
+//
+// This is the unit everything works in, and it is deliberately not a
+// "logical secret" that spans stores. Nothing here is inferred: the name is the
+// name the store reports, and Env is empty when the store does not scope by
+// environment. A tool that guessed which entries were "the same secret" would
+// be guessing about the one thing it exists to be precise about.
+type Entry struct {
+	Store string // store ID: "github", "gcp"
+	Name  string // exactly as the store holds it
+	Env   string // "" when this store has no environment for it
+}
+
+// Label is what the operator sees, and the whole point of the walk: store,
+// name as stored, environment when there is one.
+func (e Entry) Label() string {
+	if e.Env == "" {
+		return fmt.Sprintf("%s:%s", e.Store, e.Name)
+	}
+	return fmt.Sprintf("%s:%s:%s", e.Store, e.Name, e.Env)
+}
+
+// ID is a stable key for an entry, used to track what a session has touched.
+func (e Entry) ID() string { return e.Store + "\x00" + e.Env + "\x00" + e.Name }
+
+// Store is one place secrets live.
 type Store interface {
-	// ID is the stable identifier used in config and flags.
+	// ID is the stable identifier used in output and flags.
 	ID() string
 	// Label is what the operator sees.
 	Label() string
@@ -29,29 +53,21 @@ type Store interface {
 	// before the first keystroke.
 	Preflight(ctx context.Context) error
 
-	// Target is the fully-qualified name this secret has in this store, in this
-	// environment. Shown in the confirmation, so the operator sees exactly what
-	// is about to be overwritten.
-	Target(s config.Secret, e config.Environment) string
-
-	// List returns the names of the secrets that already exist for an
-	// environment, so a create can be distinguished from an overwrite.
-	List(ctx context.Context, e config.Environment) (map[string]bool, error)
+	// Enumerate lists every secret this store currently holds for the project.
+	// This is the only source of truth about what exists.
+	Enumerate(ctx context.Context) ([]Entry, error)
 
 	// Write stores a value. Implementations MUST pass the value on stdin and
 	// MUST NOT append a trailing newline.
-	Write(ctx context.Context, s config.Secret, e config.Environment, value string) error
+	Write(ctx context.Context, e Entry, value string) error
 
 	// Read returns a stored value, or ErrWriteOnly, or ErrNotFound.
-	Read(ctx context.Context, s config.Secret, e config.Environment) (string, error)
+	Read(ctx context.Context, e Entry) (string, error)
 
 	// Readable reports whether Read can ever succeed.
 	Readable() bool
-}
 
-// Provisioner is implemented by stores that must create something before a
-// secret can be written to it.
-type Provisioner interface {
-	// EnsureEnvironments creates whatever an environment-scoped write needs.
-	EnsureEnvironments(ctx context.Context, envs []config.Environment, dryRun bool, log func(string, bool)) error
+	// Environments lists the environments this store scopes secrets by. Empty
+	// for a store that does not have the concept.
+	Environments(ctx context.Context) ([]string, error)
 }

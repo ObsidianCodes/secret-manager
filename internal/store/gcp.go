@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ObsidianCodes/secret-manager/internal/config"
@@ -91,15 +92,16 @@ func (g *GCP) Preflight(ctx context.Context) error {
 	return nil
 }
 
-func (g *GCP) Target(s config.Secret, e config.Environment) string {
-	return g.prefix + s.Key + e.Suffix()
-}
-
-func (g *GCP) List(ctx context.Context, e config.Environment) (map[string]bool, error) {
+// Enumerate lists every secret carrying the project's prefix.
+//
+// The prefix is what makes this safe: a GCP project frequently holds secrets
+// belonging to several things, and anything not carrying the prefix is somebody
+// else's and is never listed, never walked and never written.
+func (g *GCP) Enumerate(ctx context.Context) ([]Entry, error) {
 	res, err := shell.Run(ctx, "gcloud", "secrets", "list",
 		"--project="+g.project, "--format=json(name)")
 	if err != nil {
-		return map[string]bool{}, nil
+		return nil, fmt.Errorf("listing secrets in %s: %w", g.project, err)
 	}
 	var rows []struct {
 		Name string `json:"name"`
@@ -107,20 +109,37 @@ func (g *GCP) List(ctx context.Context, e config.Environment) (map[string]bool, 
 	if err := json.Unmarshal([]byte(res.Stdout), &rows); err != nil {
 		return nil, fmt.Errorf("parsing gcloud secrets list: %w", err)
 	}
-	out := make(map[string]bool, len(rows))
+
+	var out []Entry
 	for _, r := range rows {
 		// The API returns projects/<n>/secrets/<id>; only the id is useful.
-		out[r.Name[strings.LastIndexByte(r.Name, '/')+1:]] = true
+		id := r.Name[strings.LastIndexByte(r.Name, '/')+1:]
+		if g.prefix != "" && !strings.HasPrefix(id, g.prefix) {
+			continue
+		}
+		// No environment is reported. Secret Manager has no environments, and
+		// which part of "lsr-workos-api-key-staging" is an environment is not
+		// knowable — it could equally be a secret with that name. The stored
+		// name is shown as it is, and the operator reads it.
+		out = append(out, Entry{Store: g.ID(), Name: id})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
+
+// Environments is empty: Secret Manager has no such concept.
+func (g *GCP) Environments(ctx context.Context) ([]string, error) { return nil, nil }
 
 func (g *GCP) exists(ctx context.Context, name string) bool {
 	return shell.Quiet(ctx, "gcloud", "secrets", "describe", name, "--project="+g.project)
 }
 
-func (g *GCP) Write(ctx context.Context, s config.Secret, e config.Environment, value string) error {
-	name := g.Target(s, e)
+// Exists reports whether a secret already exists, so a create can be told from
+// an overwrite before anything is written.
+func (g *GCP) Exists(ctx context.Context, name string) bool { return g.exists(ctx, name) }
+
+func (g *GCP) Write(ctx context.Context, e Entry, value string) error {
+	name := e.Name
 
 	if !g.exists(ctx, name) {
 		if _, err := shell.Run(ctx, "gcloud", "secrets", "create", name,
@@ -151,13 +170,12 @@ func (g *GCP) Write(ctx context.Context, s config.Secret, e config.Environment, 
 	return nil
 }
 
-func (g *GCP) Read(ctx context.Context, s config.Secret, e config.Environment) (string, error) {
-	name := g.Target(s, e)
-	if !g.exists(ctx, name) {
+func (g *GCP) Read(ctx context.Context, e Entry) (string, error) {
+	if !g.exists(ctx, e.Name) {
 		return "", ErrNotFound
 	}
 	res, err := shell.Run(ctx, "gcloud", "secrets", "versions", "access", "latest",
-		"--secret="+name, "--project="+g.project)
+		"--secret="+e.Name, "--project="+g.project)
 	if err != nil {
 		return "", err
 	}
@@ -167,8 +185,7 @@ func (g *GCP) Read(ctx context.Context, s config.Secret, e config.Environment) (
 }
 
 // Versions lists the enabled version numbers of a secret, newest first.
-func (g *GCP) Versions(ctx context.Context, s config.Secret, e config.Environment) ([]string, error) {
-	name := g.Target(s, e)
+func (g *GCP) Versions(ctx context.Context, name string) ([]string, error) {
 	res, err := shell.Run(ctx, "gcloud", "secrets", "versions", "list", name,
 		"--project="+g.project, "--filter=state:ENABLED", "--format=value(name)")
 	if err != nil {
@@ -182,3 +199,6 @@ func (g *GCP) Versions(ctx context.Context, s config.Secret, e config.Environmen
 	}
 	return out, nil
 }
+
+// Prefix is the project's Secret Manager name prefix.
+func (g *GCP) Prefix() string { return g.prefix }

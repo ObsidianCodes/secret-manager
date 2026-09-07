@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/ObsidianCodes/secret-manager/internal/config"
-	"github.com/ObsidianCodes/secret-manager/internal/store"
+	"github.com/ObsidianCodes/secret-manager/internal/shell"
 	"github.com/ObsidianCodes/secret-manager/internal/ui"
 )
 
@@ -22,45 +23,33 @@ var (
 func newInitCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "init",
-		Short: "Create .secretman.yaml, then create the environments it declares",
-		Long: `Gets a repository into a rotatable state, writing no secret value.
+		Short: "Write .secretman.yaml: repository, GCP project, name prefix",
+		Long: `Asks three things and writes them down.
 
-Two things happen, in order.
+  github.repo    which repository holds the Actions secrets
+  gcp.project    which GCP project holds the Secret Manager secrets
+  gcp.prefix     which name prefix within it belongs to this project
 
-  1. The config. init looks for .secretman.yaml, walking up from the working
-     directory. If there is none, it asks for the project, the stores, the
-     environments and the secrets, and writes the file at the repository root.
-     If there is one, it stops and asks before touching it.
+That is the entire config. No secret is named in it, so it cannot be wrong
+about one — what exists is read from the stores on every run.
 
-  2. The environments. The GitHub Environments named in the config are created
-     if missing. An environment-scoped secret cannot be written until its
-     environment exists, so this has to happen before the first rotation.
+If a config already exists, init stops and asks before replacing it, because
+replacing it is not an edit. Changing the repository or the prefix points
+secretman at a different set of secrets: the ones it points at now keep
+existing, keep working, and stop being visible to this tool entirely.
 
-Overwriting an existing config DETACHES it: nothing is deleted from any store,
-but a secret dropped from the file stops being rotated, verified or listed by
-this tool, and nothing will mention it again. To change one secret rather than
-all of them, use config add, config edit or config rm.
-
-The file it writes holds names, kinds and validation rules. It never holds a
-value or a digest of one, and is meant to be committed.`,
-		Example: `  # First run in a fresh repository: wizard, then create the environments
-  secretman init
-
-  # Look at the config it would write, without writing it
-  secretman init --print
-
-  # Replace an existing config without being asked to confirm
-  secretman init --force
-
-  # Create the environments for a config that already exists, and stop
-  secretman doctor && secretman init --force --dry-run`,
+init creates nothing in any store. Environments are created by ` + "`secretman env add`" + `,
+and secrets by ` + "`secretman config add`" + `.`,
+		Example: `  secretman init
+  secretman init --print      # show what it would write, write nothing
+  secretman init --force      # replace an existing config without asking`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(cmd.Context())
 		},
 	}
 	c.Flags().BoolVarP(&flagInitForce, "force", "f", false,
-		"replace an existing config without asking (detaches it)")
+		"replace an existing config without asking")
 	c.Flags().BoolVar(&flagInitPrint, "print", false,
 		"print the config to stdout instead of writing it")
 	return c
@@ -72,19 +61,17 @@ func runInit(ctx context.Context) error {
 		return err
 	}
 
+	ui.Title("secretman › init")
+
 	if existing {
-		ui.Title("secretman › init")
 		ui.Note("config %s", path)
-		ok, err := confirmOverwrite(path)
+		ok, err := confirmReplace(path)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			ui.Blank()
-			ui.Note("Nothing written. To change one secret rather than all of them:")
-			ui.Note("  secretman config add          add a secret")
-			ui.Note("  secretman config edit <key>   change one")
-			ui.Note("  secretman config rm <key>     remove one")
+			ui.Note("Nothing written.")
 			ui.Blank()
 			return nil
 		}
@@ -94,14 +81,7 @@ func runInit(ctx context.Context) error {
 		return err
 	}
 
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	if d := filepath.Dir(path); d != "" && d != "." {
-		dir = d
-	}
-	cfg, err := wizardConfig(ctx, dir)
+	cfg, err := wizardConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,14 +98,17 @@ func runInit(ctx context.Context) error {
 	if err := config.Save(cfg, path); err != nil {
 		return err
 	}
+
 	ui.Blank()
 	ui.OK("wrote %s", path)
-	ui.Note("commit it — it names secrets, it holds none")
-
-	// Everything from here writes to a store, and every failure past this point
-	// leaves a config that is still correct, so none of it is fatal to the file.
-	flagConfig = path
-	return provision(ctx)
+	ui.Note("commit it — it names no secret and holds no value")
+	ui.Blank()
+	ui.Note("next:")
+	ui.Note("  secretman doctor       check both stores are reachable")
+	ui.Note("  secretman rotate       walk whatever already exists")
+	ui.Note("  secretman config add   create a secret that does not")
+	ui.Blank()
+	return nil
 }
 
 // initTarget decides which file init is about, and whether it already exists.
@@ -149,7 +132,26 @@ func initTarget() (path string, existing bool, err error) {
 	return path, false, err
 }
 
-func confirmOverwrite(path string) (bool, error) {
+func confirmReplace(path string) (bool, error) {
+	// What the existing config points at is worth printing, because that is
+	// precisely what is about to stop being visible.
+	if cfg, err := config.Load(path, ""); err == nil {
+		ui.Blank()
+		ui.Warn("This project already points somewhere, and secrets are set there:")
+		if cfg.GitHub != nil {
+			ui.Warn("  github  %s", orAuto(cfg.GitHub.Repo))
+		}
+		if cfg.GCP != nil {
+			ui.Warn("  gcp     %s, prefix %q", cfg.GCP.Project, cfg.GCP.Prefix)
+		}
+		ui.Warn("")
+		ui.Warn("  Replacing this points secretman at a different set of secrets.")
+		ui.Warn("  Nothing is deleted: the secrets it points at now keep existing and")
+		ui.Warn("  keep working. They simply stop being listed, rotated or verified,")
+		ui.Warn("  and nothing here will mention them again.")
+		ui.Blank()
+	}
+
 	if flagInitForce {
 		ui.Warn("--force: replacing %s", path)
 		return true, nil
@@ -158,109 +160,186 @@ func confirmOverwrite(path string) (bool, error) {
 		return false, err
 	}
 
-	// The existing config is loaded only to say what is about to be detached.
-	// A config too broken to load is still worth overwriting, so a failure here
-	// is reported and moved past.
-	summary := "the existing configuration"
-	if cfg, err := config.LoadRaw(path, ""); err == nil {
-		summary = fmt.Sprintf("%d secret(s) — %v", len(cfg.Secrets), cfg.SecretKeys())
-	}
-
-	ui.Blank()
-	ui.Warn("A config already exists. Replacing it DETACHES what it describes:")
-	ui.Warn("  %s", summary)
-	ui.Warn("  Nothing is deleted from GitHub or Secret Manager, but any secret")
-	ui.Warn("  not in the new config stops being rotated, verified or listed,")
-	ui.Warn("  and this tool will never mention it again.")
-	ui.Blank()
-
-	overwrite := false
+	replace := false
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
-			Title("Replace this config from scratch?").
-			Description("config add / edit / rm change one secret instead").
+			Title("Replace this config?").
 			Affirmative("Replace it").
 			Negative("Leave it alone").
-			Value(&overwrite),
+			Value(&replace),
 	)).WithTheme(theme()).Run()
-	return overwrite, err
+	return replace, err
 }
 
-// provision creates the GitHub Environments the config declares.
-func provision(ctx context.Context) error {
-	s, err := loadSession()
+// wizardConfig asks for the three fields.
+func wizardConfig(ctx context.Context) (*config.Config, error) {
+	stores := []string{"github", "gcp"}
+	repo := detectRepo(ctx)
+	gcpProject := detectGCPProject(ctx)
+	prefix := defaultPrefix(repo)
+
+	if err := huh.NewForm(huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("Which stores hold this project's secrets?").
+			Description("space to toggle · enter to continue").
+			Options(
+				huh.NewOption("GitHub Actions — repository and environment secrets, via gh", "github").Selected(true),
+				huh.NewOption("Google Secret Manager — versioned secrets, via gcloud", "gcp").Selected(true),
+			).
+			Value(&stores).
+			Validate(func(v []string) error {
+				if len(v) == 0 {
+					return fmt.Errorf("pick at least one store")
+				}
+				return nil
+			}),
+	)).WithTheme(theme()).Run(); err != nil {
+		return nil, err
+	}
+
+	cfg := &config.Config{}
+
+	if has(stores, "github") {
+		if err := huh.NewForm(huh.NewGroup(
+			huh.NewInput().
+				Title("GitHub repository").
+				Description("owner/name · blank lets gh resolve it from the working directory").
+				Placeholder("owner/name").
+				Value(&repo).
+				Validate(optional(looksLikeRepo)),
+		)).WithTheme(theme()).Run(); err != nil {
+			return nil, err
+		}
+		cfg.GitHub = &config.GitHub{Repo: strings.TrimSpace(repo)}
+	}
+
+	if has(stores, "gcp") {
+		if err := huh.NewForm(huh.NewGroup(
+			huh.NewInput().
+				Title("GCP project id").
+				Description("the id, not the display name — they are often different").
+				Value(&gcpProject).
+				Validate(notBlank("GCP project id")),
+
+			huh.NewInput().
+				Title("Secret name prefix").
+				Description("everything carrying it is this project's; everything else in the "+
+					"GCP project is left alone").
+				Value(&prefix),
+		)).WithTheme(theme()).Run(); err != nil {
+			return nil, err
+		}
+		cfg.GCP = &config.GCP{
+			Project: strings.TrimSpace(gcpProject),
+			Prefix:  strings.TrimSpace(prefix),
+		}
+	}
+
+	return cfg, cfg.Validate()
+}
+
+func detectRepo(ctx context.Context) string {
+	res, err := shell.Run(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
 	if err != nil {
-		return err
+		return ""
 	}
+	return strings.TrimSpace(res.Stdout)
+}
 
-	ui.Title("%s › init", s.cfg.Project)
-	if err := s.preflight(ctx); err != nil {
-		return err
+func detectGCPProject(ctx context.Context) string {
+	res, err := shell.Run(ctx, "gcloud", "config", "get-value", "project")
+	if err != nil {
+		return ""
 	}
+	v := strings.TrimSpace(res.Stdout)
+	if v == "(unset)" {
+		return ""
+	}
+	return v
+}
 
-	did := false
-	for _, st := range s.stores {
-		p, ok := st.(store.Provisioner)
-		if !ok {
-			continue
+// defaultPrefix suggests <repo-name>- so the GCP project can hold more than one
+// project's secrets without them colliding.
+func defaultPrefix(repo string) string {
+	name := repo
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		if wd, err := os.Getwd(); err == nil {
+			name = filepath.Base(wd)
 		}
-		ui.Step("%s", st.Label())
-		if err := p.EnsureEnvironments(ctx, s.cfg.Environments, flagDryRun, ui.Log); err != nil {
-			return err
-		}
-		did = true
 	}
-	if !did {
-		ui.Blank()
-		ui.Note("no store needs provisioning")
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return ""
 	}
+	return strings.ToLower(name) + "-"
+}
 
-	ui.Step("Done")
-	ui.Note("run `secretman rotate <environment>` to populate the secrets")
-	ui.Blank()
-	return nil
+func orAuto(s string) string {
+	if s == "" {
+		return "(resolved by gh from the working directory)"
+	}
+	return s
 }
 
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the config and every store's credentials, and stop",
-		Long: `Runs the same preflight a rotation runs, and nothing else.
+		Long: `Runs the same preflight a rotation runs, then reports what it can see.
 
-Worth its own command because every preflight failure here — a wrong project id,
-an expired login, an API that was never enabled — is one that would otherwise be
+Worth its own command because every failure here — a wrong project id, an
+expired login, an API that was never enabled — is one that would otherwise be
 discovered halfway through a rotation, with one store already written and the
 other not.
 
 Nothing is prompted for and nothing is written, so it is safe in CI and safe to
 run while someone else is mid-rotation.`,
 		Example: `  secretman doctor
-  secretman doctor --store gcp
   secretman doctor -c ../other-project/.secretman.yaml`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			s, err := loadSession()
 			if err != nil {
 				return err
 			}
-			ui.Title("%s › doctor", s.cfg.Project)
-			if err := s.preflight(cmd.Context()); err != nil {
+			ui.Title("secretman › doctor")
+			if err := s.preflight(ctx); err != nil {
 				return err
 			}
 
-			ui.Step("Configuration")
-			ui.Note("environments: %v", s.cfg.EnvNames())
-			ui.Note("secrets:      %v", s.cfg.SecretKeys())
+			entries, err := s.enumerate(ctx)
+			if err != nil {
+				return err
+			}
+
+			ui.Step("Visible")
 			for _, st := range s.stores {
+				n := 0
+				for _, e := range entries {
+					if e.Store == st.ID() {
+						n++
+					}
+				}
 				verb := "write-only"
 				if st.Readable() {
-					verb = "readable — verify and cross-check work here"
+					verb = "readable — verify works here"
 				}
-				ui.Note("%-24s %s", st.Label(), verb)
+				ui.Note("%-24s %2d secret(s), %s", st.Label(), n, verb)
+			}
+			if s.gh != nil {
+				envs, _ := s.gh.Environments(ctx)
+				ui.Note("%-24s %v", "GitHub environments", envs)
 			}
 
 			ui.Blank()
-			ui.OK("ready to rotate")
+			if len(entries) == 0 {
+				ui.Warn("no secrets exist yet; `secretman config add` creates one")
+			} else {
+				ui.OK("ready to rotate")
+			}
 			ui.Blank()
 			return nil
 		},

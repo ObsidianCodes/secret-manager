@@ -1,13 +1,13 @@
 # secretman
 
-Rotate project credential. Every store. One environment at a time.
+Rotate project credential. Every store. One walk.
 
-One binary, many project. Project describe itself in `.secretman.yaml` — names only, never a value. Commit that file.
+**Keep no list of your secrets.** Config is three field. What exist get read from the store, every run. Nothing to keep in sync, nothing to go stale.
 
 ```
-secretman init                # wizard write the config, then create the environments
-secretman rotate staging      # show target, prompt, write, verify
-secretman status              # what exist where
+secretman init      # ask 3 thing, write .secretman.yaml
+secretman rotate    # walk what actually exist, prompt each
+secretman hotswap   # tick a few from list, rotate only those
 ```
 
 ## Install
@@ -23,216 +23,177 @@ curl -fsSL https://raw.githubusercontent.com/ObsidianCodes/secret-manager/master
   | INSTALL_DIR=/usr/local/bin VERSION=v0.1.0 sh
 ```
 
-Script pull release tarball for your os/arch, check sha256, drop binary. Nothing else. One file — read it first if you like.
+Script pull release tarball for your os/arch, check sha256, drop binary. One file — read it first if you like.
 
 Or Go: `go install github.com/ObsidianCodes/secret-manager@latest`
 Or local: `make build` → `./bin/secretman`
 
 Need `gh` and `gcloud` on PATH, both logged in. secretman reuse their credential. Never ask for token of own, never store one.
 
+## The config
+
+Whole file. Three field:
+
+```yaml
+github:
+  repo: ObsidianCodes/lsr     # omit -> gh resolve from cwd
+
+gcp:
+  project: lifespanrecords    # project ID, not display name. Often differ
+  prefix: lsr-                # everything carrying it is this project's
+```
+
+That is it. No secret name, no environment list, no value, no digest. **Commit it.**
+
+Why so small: a list of secret in a file is a second copy of what the store already know, and the copy is the half that rot. Somebody add a secret through the dashboard, file now lie. secretman ask the store instead — `gh secret list`, `gcloud secrets list`, `gh api .../environments`. Cannot be stale, because nothing is remembered.
+
+`prefix` do the real work on GCP side. A GCP project often hold many project secret. Everything with the prefix is your. Everything without is somebody else, and secretman never list it, never walk it, never write it.
+
+Unknown key = error, not ignore.
+
 ## Features
 
-**Write same credential to many store, one shot.** GitHub Actions environment secret via `gh`. Google Secret Manager version via `gcloud`. One prompt feed both. No more "GCP got the new key, GitHub still on old, nobody know which is live".
-
-**Show you the target before you type.** Every prompt print exactly what it will overwrite:
+**Walk what exist, not what somebody wrote down.** `rotate` ask both store what they hold, then step through it. Every stop print exactly what it about to overwrite:
 
 ```
-WORKOS_API_KEY › staging
-  github    ObsidianCodes/lsr  env:staging
-  gcp       lsr-workos-api-key-staging
-  where     Dashboard › API Keys
+github:WORKOS_API_KEY:staging
+  > Type or paste a value
+    Generate a random value
+    Leave it alone
 ```
 
-No guessing which environment you in. No rule engine pretending to know what a valid key look like.
+Store, name **as that store spell it**, environment when there is one. GitHub say `WORKOS_API_KEY` in env `staging`. Secret Manager say `lsr-workos-api-key-staging` with no environment, because Secret Manager have no environment. Both shown as they really are. Nothing inferred.
 
-**Kill the trailing newline.** Paste carry `\n`. `echo` add one. `gh secret set X < file` inherit one. Every UI hide it. Consumer read it as part of credential. secretman strip it — and report the strip, because value written is then not value typed. Also strip pasted `NAME=` and wrapping quote out of `.env` paste.
+**One paste, many place.** After you enter a value, secretman ask if the same value belong anywhere else, and give you a checkbox list of what you have not reached yet. Tick GitHub staging + GCP, done — one paste, two store, guaranteed identical. Typing same value twice is how two store end up disagreeing about which credential is live.
 
-**Refuse mangled paste.** Value with interior newline or control char is a terminal-wrapped paste. Repair by guessing = silently truncated credential that fail at next cold start. secretman refuse it instead.
+**Hotswap for the 3am case.** `secretman hotswap` show the full list, you tick the one that leaked, walk only those. No pressing Enter past thirty other.
 
-**Catch the value you already used somewhere else.** Before first keystroke, secretman read what other environment hold and digest it. Paste staging value into production, get refused, by name. Derive entirely from store state — no config, cannot go stale. `--no-cross-check` override.
+**Kill the trailing newline.** Paste carry `\n`. `echo` add one. `gh secret set X < file` inherit one. Every UI hide it. Consumer read it as part of credential. secretman strip it — and report the strip, because value written is then not value typed. Also strip pasted `NAME=` and wrapping quote from `.env` paste.
 
-**Generate value nobody issue.** Session sealing key, cookie password — thing you invent. Pick "generate" at any prompt, get 32 byte from `crypto/rand`, base64. Never type it, never see it.
+**Refuse mangled paste.** Interior newline or control char mean terminal-wrapped paste. Repair by guessing = silently truncated credential that fail at next cold start. Refuse instead.
 
-**Verify what land.** Readable store get read back after write and digest compared. Mismatch is loud. Write-only store get digest of what was sent printed — only record that will ever exist.
+**Say where a value already live.** Before first keystroke, secretman digest everything readable. Paste a value that already sit somewhere else, it name the place. **Warn, not refuse** — reusing one credential across place is sometimes exactly what you doing, deliberately, from the prompt above. You decide.
 
-**Audit stored value.** `verify` read every secret from every readable store: two environment sharing one value, value ending in newline, value with control char. `status` print presence matrix — which secret, which env, which store.
+**Generate value nobody issue.** Session sealing key, cookie password. Pick "generate" at any prompt: 32 byte from `crypto/rand`, base64. Never typed, never seen.
+
+**Verify what land.** Readable store get read back after write, digest compared. Mismatch is loud. Write-only store get digest of what was sent printed — only record that will ever exist.
+
+**Find what one environment lack.** `status` compare environment against each other: "staging has CLAIM_TOKEN, production does not". Derived from store state, catch drift both direction, cost nothing. No declared list mean nothing to keep in step — and nothing that can be wrong about what ought to exist.
 
 **Never print a secret.** Value go to `gh`/`gcloud` on **stdin, never argv** — argv visible in `ps` to every user on machine. Hidden prompt. Output only ever show length and `sha256:` first 12 hex.
 
-**Config you can edit without editing.** `config add|edit|rm` change one secret in place. `init` is bootstrap only, and warn loud before replacing existing config.
+**No format rule, anywhere.** No `prefix: sk_`, no `minLength`, no expected shape. See below.
 
-**Every command document itself.** `--help` on any command carry a real `Examples` block. `config schema` print every field annotated — for you, and for whatever AI is writing your config.
+**Few flag.** `-c`, `--dry-run`, and two `--force`. That is all of them.
 
 ## Usage
 
 ### `secretman init`
 
-Bootstrap. Two step, in order.
+Ask three thing, write `.secretman.yaml`. Suggest default from `gh repo view` and `gcloud config get-value project`.
 
-1. **Config.** Look for `.secretman.yaml`, walking up from cwd.
-   - Not found → wizard. Ask project, store, environment, Secret Manager suffix per env, then secret one by one. Write file at repo root.
-   - Found → **stop and ask**. Replacing detach everything the old file describe: nothing get deleted from any store, but secret dropped from file stop being rotated, verified or listed, and tool never mention it again. Confirm say so, and name what get orphaned.
-2. **Environments.** Create GitHub Environment declared in config. Environment-scoped secret cannot be written until its environment exist, so this come first.
+Config already exist → **stop and ask**. Warning is specific: changing `repo` or `prefix` point secretman at a *different set of secret*. Nothing get deleted — the one it point at now keep existing, keep working, and stop being visible to this tool entirely.
 
-Write no secret value. Ever.
+init create nothing in any store. Environment come from `env add`, secret from `config add`.
 
 | flag | do |
 |---|---|
-| `--force` `-f` | replace existing config with no question |
 | `--print` | print config to stdout, write nothing |
-| `--dry-run` | do not create environment either |
+| `--force` `-f` | replace existing config, no question |
 
-```
-secretman init                # fresh repo
-secretman init --print        # see what wizard would write
-secretman init --force        # replace, no prompt
-```
+### `secretman rotate`
 
-### `secretman rotate <environment>`
+The walk.
 
-The main one. Order matter, and it is deliberate:
+1. Preflight both store — wrong project id, expired login, API not enabled. Fail here, not halfway.
+2. Ask store what they hold. This is the list. There is no other list.
+3. Digest everything readable, so "already in use" can be named.
+4. Per entry: print `store:name:env` → type / generate / skip → hidden prompt → sanitize → **offer to reuse this value elsewhere** → checkbox of untouched entry.
+5. Table of every write: STORE, ENVIRONMENT, NAME, DIGEST, SOURCE. Equal digest mean same value going to both place, visible before you commit.
+6. Confirm. Write. Read back where store allow.
+7. Say what to do next — redeploy, retire old GCP version, revoke at source.
 
-1. Preflight every store — wrong project id, expired login, API not enabled. Fail here, not halfway through.
-2. Create missing environment (idempotent).
-3. Pick which secret to rotate (skip with `--only`).
-4. Read what other environment hold, digest it. One network round, before any typing.
-5. Per secret: print target → pick type / generate / skip → hidden prompt → sanitize → cross-check.
-6. Show table of every write about to happen: SECRET, STORE, TARGET, CREATE-or-OVERWRITE. Confirm.
-7. Write. Read back where store allow. Report digest per write.
-8. Print what to do next — redeploy, retire old GCP version, revoke at source.
+Enter skip. Nothing written until step 6, so ctrl-c before that cost nothing.
 
-Blank prompt = leave alone. Nothing written until step 7, so ctrl-c any time before confirm cost nothing.
+Empty store → "no secrets exist in any configured store, `secretman config add` creates one". That is correct, not a bug.
 
-| flag | do |
-|---|---|
-| `--only key,key` | skip picker, rotate just these. Emergency path |
-| `--dry-run` | everything except the write |
-| `--store gcp` | one store only |
-| `--no-cross-check` | allow value another env already hold |
-| `--yes` `-y` | skip confirm table |
+### `secretman hotswap`
 
-```
-secretman rotate staging
-secretman rotate production --only workos-api-key
-secretman rotate production --dry-run
-```
+Same walk, over a subset you tick first. For when one credential leaked and you not walking thirty.
+
+### `secretman config add`
+
+Create secret that do not exist yet. Enumeration cannot invent, so creation is own command.
+
+Ask name once, then per store where it belong — GitHub: repo-wide and/or which environment (checkbox); GCP: yes/no + the Secret Manager name, prefilled `<prefix><kebab-name>` but editable, so existing naming scheme get adopted not fought. Then value. Then same confirm table as rotate.
+
+### `secretman config rm`
+
+Delete secret **from the store**. Permanent. GCP take every version with it, no rollback after. Tick from list, read the warning, confirm.
+
+Want to stop rotating something without destroying it? Nothing to do — rotate walk what exist, Enter skip.
+
+### `secretman config show` / `path`
+
+Print the file / print which file in effect.
+
+### `secretman env list` / `env add <name>...`
+
+GitHub Environment. Env-scoped secret cannot be written until its environment exist. PUT is idempotent, so naming existing one is not error.
 
 ### `secretman status`
 
-Presence matrix, per store. Secret × environment. `●` exist, `·` missing.
+What exist where. Matrix per store, secret × environment, `●` / `·`. Then **environment difference** — what one env hold and another lack, both direction.
 
-Answer the question asked in every incident: is production actually configured, or running on value nobody set since last person left? Presence only — read no value.
-
-```
-secretman status
-secretman status --store github
-```
+Presence only. No value read.
 
 ### `secretman verify`
 
-Read every secret from every **readable** store and report two thing.
+Read every secret from every **readable** store:
 
-- **Shared value.** Two environment holding same digest. One almost certainly got populated by pasting the other. Accepted by every store, fail later in prod, name nothing useful.
-- **Damaged value.** Trailing newline, leading whitespace, interior control char. Written by something that is not this tool — web textarea, `gh secret set X < file`, `echo` in a script.
+- **Shared value.** Two entry, one digest. Sometimes correct — that is what a rotation write. Sometimes production key pasted into staging. Name both place, leave judgement to you.
+- **Damaged value.** Trailing newline, leading whitespace, interior control char. Written by something that is not this tool — web textarea, `gh secret set X < file`, `echo` in script.
 
-GitHub Actions is write-only, so project on GitHub alone get empty report, not a clean bill of health. It say so.
-
-```
-secretman verify
-secretman verify --store gcp
-```
+GitHub is write-only, so project on GitHub alone get empty report, not clean bill of health. It say so.
 
 ### `secretman doctor`
 
-Preflight and stop. Config parse, every store credential, what each store can do. Write nothing, prompt nothing — safe in CI, safe while somebody else mid-rotation.
+Preflight, then count what each store hold and list GitHub environment. Write nothing, prompt nothing. Safe in CI, safe while somebody else mid-rotation.
 
-Own command because every failure it catch is one that would otherwise surface halfway through a rotation, one store written and other not.
-
-```
-secretman doctor
-secretman doctor -c ../other/.secretman.yaml
-```
-
-### `secretman config ...`
-
-Edit one secret at a time, in place. Never touch the rest of the file.
-
-| command | do |
-|---|---|
-| `config add` | wizard, append a secret |
-| `config edit [key\|name]` | wizard prefilled. No arg → pick from list |
-| `config rm [key\|name]` | remove one, after confirm. `--force` skip |
-| `config show` | config as loaded, default filled in. `--raw` for file as written |
-| `config path` | which file is in effect |
-| `config schema` | every field, annotated. Read no file, need no credential |
-
-`edit` warn when you change key or name: old name stay in every store, holding old value, referenced by nothing. `rm` remove from config only — stored value keep existing and keep working. Revoke at source if you retiring it.
-
-```
-secretman config add
-secretman config edit WORKOS_API_KEY
-secretman config rm workos-claim-token
-secretman config schema > .secretman.yaml    # then edit by hand
-```
-
-### Global flags
+### Global flag
 
 | flag | do |
 |---|---|
 | `-c path` | config path. Default: walk up from cwd for `.secretman.yaml` |
-| `--repo owner/name` | override GitHub repo |
-| `--gcp-project id` | override GCP project |
-| `--store github,gcp` | limit to these store |
-| `--dry-run` | validate, write nothing |
-| `-y` | skip confirm |
+| `--dry-run` | everything except the write |
 | `-h` | help, with example, on every command |
 
-## Config
+## No format rule, on purpose
 
-`.secretman.yaml` at repo root. Full annotated reference: `secretman config schema`. Example: `examples/lsr.secretman.yaml`.
+secretman never check what a valid value look like. No required prefix, no minimum length, no expected shape, no "this key belong to production".
 
-```yaml
-project: lsr
+Rule like that encode a vendor's **current** key format into a file nobody maintain. Vendor ship new format — `ghp_` did not exist before 2021, `sk-proj-` before 2024 — and now your rule refuse a **correct** credential, mid-rotation, when cost is highest and the operator is already stressed. And the rule only help if you already knew the format. If you knew, you were not going to paste the wrong thing.
 
-github:
-  repo: ObsidianCodes/lsr     # omit -> gh resolve from cwd
+Showing you `github:WORKOS_API_KEY:staging` before you type beat guessing what is valid.
 
-gcp:
-  project: lifespanrecords    # project ID, not project NAME. Often differ
-  prefix: lsr-                # so many project share one GCP project
+What survive need no config and cannot go stale:
 
-environments:
-  - name: production
-    gcpSuffix: ""             # explicit empty. Prod name carry no suffix
-  - name: staging
-    gcpSuffix: "-staging"
-
-secrets:
-  - key: workos-api-key       # stable id. Used by --only, and as GCP name
-    name: WORKOS_API_KEY      # env var / GitHub secret name
-    label: WorkOS secret key  # what prompt call it
-    help: Dashboard › API Keys  # where to FIND it. Printed at prompt
-    stores: [github, gcp]     # omit = every configured store
-```
-
-Secret Manager name is `<gcp.prefix><key><env.gcpSuffix>` → `lsr-workos-api-key-staging`. Convention set once, at init. No per-secret override.
-
-Unknown YAML key = error, not ignored. Typo'd key otherwise mean a setting quietly doing nothing.
-
-**No format rule, on purpose.** No `prefix:`, no `minLength:`, no expected shape. Rule like that encode a vendor's *current* key format into a file nobody maintain. Vendor ship new format, rule now refuse a correct credential — mid-rotation, when cost is highest. Showing you the exact target beat guessing what is valid.
-
-What secretman check instead need no config and cannot go stale: newline and control char, and whether another environment already hold this exact value.
+| check | need |
+|---|---|
+| strip `NAME=`, quote, whitespace — and report it | nothing |
+| refuse control char / wrapped paste | nothing |
+| name where this value already live | store state |
+| read back after write, compare digest | store state |
+| what one environment lack | store state |
 
 ## Store
 
-| store | write | read | note |
-|---|---|---|---|
-| GitHub Actions | env-scoped secret via `gh` | **no** | write-only. Digest of what was sent is only record that will ever exist |
-| Google Secret Manager | new version via `gcloud` | yes | read-back verify every write. Old version stay enabled → rollback possible |
+| store | write | read | enumerate | note |
+|---|---|---|---|---|
+| GitHub Actions | repo + env secret via `gh` | **no** | yes, name only | write-only. Digest of what was sent is only record that will ever exist |
+| Google Secret Manager | new version via `gcloud` | yes | yes, filtered by prefix | read-back verify every write. Old version stay enabled → rollback possible |
 
-GitHub Environment get created if missing. `rotate` do it too — PUT is idempotent, one wasted API call cheaper than rotation failing because somebody deleted an env last week.
-
-GCP: if repo have Actions variable `RUN_SERVICE_ACCOUNT` (env-scoped, or repo-level fallback), secretman grant it `secretmanager.secretAccessor` on new secret. Taken from the variable, not the config, so it cannot drift from what deploy workflow actually use.
+GCP: if repo have Actions variable `RUN_SERVICE_ACCOUNT`, secretman grant it `secretmanager.secretAccessor` on new secret. Taken from the variable, not the config, so it cannot drift from what deploy workflow actually use.
 
 Rotating do **not** revoke old credential. Writing new one do not disable old. Go to the provider.
 
@@ -244,6 +205,6 @@ make check      # vet + gofmt + test
 make build      # -> ./bin/secretman
 ```
 
-Test cover what must not regress: newline stripping, control-char refusal, format-agnostic accept (a check that refuse a valid provider key is the failure mode this tool most want to avoid), config round trip, explicit-empty `gcpSuffix` survival, atomic save. Test also assert error message never quote the secret.
+Test cover what must not regress: newline stripping, control-char refusal, format-agnostic accept (check that refuse a valid provider key is the failure mode most worth avoiding), environment diff both direction, entry identity across store and env, config round trip, atomic save. Test also assert error message never quote the secret.
 
 Release: tag `v*`, CI cross-build darwin/linux × amd64/arm64, upload tarball + `checksums.txt`.

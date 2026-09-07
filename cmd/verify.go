@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,14 +13,14 @@ import (
 func newVerifyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify",
-		Short: "Check stored values for shared credentials and stray whitespace",
+		Short: "Read stored values back and report shared or damaged ones",
 		Long: `Reads every secret from every readable store and reports two things.
 
-Shared values. If two environments hold the same digest, one of them was almost
-certainly populated by pasting the other's value. That is the mistake this whole
-tool is built around: it is accepted by every store, passes every syntactic
-check, and surfaces later as an authentication failure in production that names
-nothing useful.
+Shared values. If two entries hold the same digest, the same credential is in
+both places. Sometimes that is correct and deliberate — one credential written
+to two stores is exactly what a rotation does. Sometimes it means production's
+key was pasted into staging, which every store accepts and only production
+notices. This says which entries match and leaves the judgement to you.
 
 Damaged values. A stored value carrying a trailing newline or a control
 character was written by something other than this tool — a web textarea, a
@@ -30,94 +29,74 @@ every UI that displays a secret, so nothing else will ever show it to you.
 
 Only digests are printed. No secret value reaches the terminal.
 
-A write-only store has nothing to verify, so a project on GitHub alone gets an
-empty report rather than a clean bill of health.`,
-		Example: `  secretman verify
-  secretman verify --store gcp`,
-		Args: cobra.NoArgs,
+GitHub Actions secrets are write-only, so a project on GitHub alone gets an
+empty report rather than a clean bill of health, and says so.`,
+		Example: `  secretman verify`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			s, err := loadSession()
+			s, entries, err := gatherQuiet(ctx, "verify")
 			if err != nil {
 				return err
 			}
 
-			ui.Title("%s › verify", s.cfg.Project)
-			if err := s.preflight(ctx); err != nil {
-				return err
-			}
-
-			var readable []store.Store
-			for _, st := range s.stores {
-				if st.Readable() {
-					readable = append(readable, st)
+			var readable []store.Entry
+			for _, e := range entries {
+				if st := s.storeFor(e); st != nil && st.Readable() {
+					readable = append(readable, e)
 				}
 			}
 			if len(readable) == 0 {
 				ui.Blank()
-				ui.Warn("no readable store is configured; GitHub Actions secrets are write-only,")
-				ui.Warn("so there is nothing to read back. Configure gcp to make verify useful.")
+				ui.Warn("nothing readable is configured; GitHub Actions secrets are write-only,")
+				ui.Warn("so there is nothing to read back. Add a gcp store to make verify useful.")
+				ui.Blank()
 				return nil
 			}
 
+			ui.Step("Reading")
 			problems := 0
-			for _, st := range readable {
-				ui.Step("%s", st.Label())
+			byDigest := map[string][]string{}
 
-				headers := append([]string{"SECRET"}, s.cfg.EnvNames()...)
-				var rows [][]string
-
-				for _, sec := range s.cfg.Secrets {
-					if !sec.UsesStore(st.ID()) {
-						continue
-					}
-
-					// digest -> the environments holding it, in declared order.
-					byDigest := map[string][]string{}
-					cells := map[string]string{}
-
-					for _, e := range s.cfg.Environments {
-						v, err := st.Read(ctx, sec, e)
-						if err != nil {
-							cells[e.Name] = ui.Absent()
-							continue
-						}
-						fp := secretval.Fingerprint(v)
-						byDigest[fp] = append(byDigest[fp], e.Name)
-						cells[e.Name] = fp
-
-						if damaged := describeDamage(v); damaged != "" {
-							ui.Warn("%s in %s: %s", sec.Name, e.Name, damaged)
-							problems++
-						}
-					}
-
-					for fp, envs := range byDigest {
-						if len(envs) > 1 {
-							ui.Warn("%s: %s share one value (%s)",
-								sec.Name, strings.Join(envs, " and "), ui.Fingerprint(fp))
-							problems++
-						}
-					}
-
-					row := []string{sec.Name}
-					for _, e := range s.cfg.Environments {
-						row = append(row, cells[e.Name])
-					}
-					rows = append(rows, row)
+			for _, e := range readable {
+				v, err := s.storeFor(e).Read(ctx, e)
+				if err != nil {
+					ui.Warn("%s: could not be read: %v", e.Label(), err)
+					problems++
+					continue
 				}
+				fp := secretval.Fingerprint(v)
+				byDigest[fp] = append(byDigest[fp], e.Label())
 
-				ui.Blank()
-				fmt.Println(ui.Indent(ui.Table(headers, rows), 2))
+				if damaged := describeDamage(v); damaged != "" {
+					ui.Warn("%s: %s", e.Label(), damaged)
+					problems++
+					continue
+				}
+				ui.OK("%s — %s", e.Label(), ui.Fingerprint(fp))
+			}
+
+			ui.Step("Shared values")
+			shared := 0
+			for _, fp := range sortedKeys(byDigest) {
+				where := byDigest[fp]
+				if len(where) > 1 {
+					ui.Warn("%s share one value (%s)",
+						strings.Join(where, " and "), ui.Fingerprint(fp))
+					shared++
+				}
+			}
+			if shared == 0 {
+				ui.OK("every readable secret holds a distinct value")
 			}
 
 			ui.Blank()
 			if problems == 0 {
-				ui.OK("no shared or damaged values found")
+				ui.OK("no damaged values found")
 			} else {
-				ui.Warn("%d problem(s) above; rotate the affected environments", problems)
+				ui.Warn("%d problem(s) above", problems)
 			}
-			ui.Note("matching digests in one row mean the same secret in two places")
+			ui.Note("a shared value is only a problem if those places should differ")
 			ui.Blank()
 			return nil
 		},
@@ -139,13 +118,4 @@ func describeDamage(v string) string {
 		return "stored value contains an interior newline or tab — likely a wrapped paste"
 	}
 	return ""
-}
-
-// verifyOne is kept for symmetry with rotate's per-secret handling; it exists so
-// the damage rules have a single caller-visible entry point in tests.
-func verifyOne(v string) []string {
-	if d := describeDamage(v); d != "" {
-		return []string{d}
-	}
-	return nil
 }
