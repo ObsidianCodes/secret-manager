@@ -103,28 +103,6 @@ On a GitHub-only project verify has nothing to read, and says so rather than rep
 
 **`doctor`** runs the same preflight a rotation runs, counts what each store holds, lists your environments, and stops. Nothing prompted, nothing written. Safe in CI, safe while a colleague is mid-rotation.
 
-## What it checks, and what it deliberately doesn't
-
-Paste handling is the boring part that earns its keep. Values get stripped of surrounding whitespace, a leading `NAME=` from a copied `.env` line, and wrapping quotes. Anything stripped is reported, because at that point the value written isn't the value you typed and you should know. Control characters and interior newlines are refused outright rather than cleaned up, since that's almost always a terminal that hard-wrapped a long key, and guessing at the repair would write a truncated credential that fails at the next cold start instead of here.
-
-What secretman won't do is judge whether a value is the right *kind* of thing. There's no required prefix, no minimum length, no "this key looks like production".
-
-Earlier versions had all of that. You'd write `prefix: sk_` in the config and it would refuse anything else. The problem is that you've now written a vendor's current key format into a file nobody maintains. `ghp_` didn't exist before 2021. `sk-proj-` didn't exist before 2024. When the format changes your rule starts rejecting perfectly good credentials, and it does it mid-rotation, when nobody has the patience to argue with their own tooling. The check also only helps if you already knew the format, and if you knew it you probably weren't about to paste the wrong thing.
-
-Showing you `github:WORKOS_API_KEY:staging` before you type turned out to be worth more than any rule.
-
-One cross-check survives, and it needs no configuration. Before the first prompt, secretman digests everything readable. If you paste a value that already lives somewhere, it tells you where. That's a warning and not a refusal, because reusing one credential across two stores is something this tool now helps you do deliberately.
-
-| check | needs |
-|---|---|
-| strip `NAME=`, quotes, whitespace, and say so | nothing |
-| refuse control characters and wrapped pastes | nothing |
-| tell you where this value already lives | store state |
-| read back and compare after writing | store state |
-| what one environment is missing | store state |
-
-Nothing in that column can go stale.
-
 ## The two stores
 
 | | GitHub Actions | Google Secret Manager |
